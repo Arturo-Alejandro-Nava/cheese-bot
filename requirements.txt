@@ -3,3 +3,4 @@ google-generativeai
 pypdf2
 beautifulsoup4
 requests
+pymupdf

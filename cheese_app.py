@@ -6,12 +6,13 @@ import os
 import time
 import zipfile
 import io
+import fitz  # This is PyMuPDF (The PDF-to-Image tool)
 
 # --- CONFIGURATION ---
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
-    st.error("No API Key found. Please set GOOGLE_API_KEY in Streamlit Secrets.")
+    st.error("Secrets Error: Please add GOOGLE_API_KEY to Streamlit.")
     st.stop()
 
 genai.configure(api_key=API_KEY)
@@ -23,11 +24,9 @@ st.set_page_config(
     page_icon="🧀"
 )
 
-# --- HEADER (Logo + Exact Title) ---
+# --- HEADER ---
 col1, col2 = st.columns([1, 4])
-
 with col1:
-    # Logic to find your logo file whatever you named it
     possible_names = ["logo", "logo.jpg", "logo.png", "logo.jpeg"]
     for name in possible_names:
         if os.path.exists(name):
@@ -37,135 +36,162 @@ with col1:
         st.write("🧀")
 
 with col2:
-    # THE EXACT TITLE YOU REQUESTED
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 
-st.markdown("---") # Divider line
+st.markdown("---")
 
-# --- 1. DEEP DOCUMENT HUNTER (Scrapes PDFs & Zips) ---
-@st.cache_resource(ttl=3600)
-def get_knowledge_assets():
-    target_url = "https://hcmakers.com/resources/"
-    valid_files = []
+# --- 1. MEDIA SCRAPER (Web Images) ---
+@st.cache_resource(ttl=3600) 
+def get_website_media():
+    urls = [
+        "https://hcmakers.com/",
+        "https://hcmakers.com/products/",
+        "https://hcmakers.com/quality/",
+        "https://hcmakers.com/contact-us/"
+    ]
+    media_text = "\n--- WEBSITE IMAGE LIBRARY (Use these URLs to show products) ---\n"
+    
     headers = {"User-Agent": "Mozilla/5.0"}
+    for url in urls:
+        try:
+            resp = requests.get(url, headers=headers)
+            soup = BeautifulSoup(resp.content, 'html.parser')
+            images = soup.find_all('img', src=True)
+            for img in images:
+                src = img['src']
+                if src.startswith('/'): src = "https://hcmakers.com" + src
+                if any(x in src.lower() for x in ['product', 'cheese', 'fresco', 'panela', 'oaxaca']):
+                    alt = img.get('alt', 'Cheese Image')
+                    media_text += f"PRODUCT IMAGE: {alt} | LINK: {src}\n"
+        except: continue
+    return media_text
+
+# --- 2. DEEP DOC & IMAGE GENERATOR (The PDF-to-Picture Engine) ---
+@st.cache_resource(ttl=3600)
+def process_documents():
+    target_url = "https://hcmakers.com/resources/"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    # Files for AI to read
+    ai_files = []
+    # Dictionary of Image Filenames to show the user
+    pdf_previews_text = "\n--- DOWNLOADABLE DOCUMENT PREVIEWS (Images generated from PDFs) ---\n"
     
     try:
         resp = requests.get(target_url, headers=headers)
         soup = BeautifulSoup(resp.content, 'html.parser')
         links = soup.find_all('a', href=True)
-        
         count = 0
-        limit = 6 
+        limit = 6
         
         for link in links:
             if count >= limit: break
             href = link['href']
             
-            # Download Logic for PDFs and Zips
-            if href.endswith('.pdf') or href.endswith('.zip'):
-                try:
-                    file_data = requests.get(href, headers=headers).content
-                    
-                    if href.endswith('.pdf'):
-                        fname = f"doc_{count}.pdf"
-                        with open(fname, "wb") as f: f.write(file_data)
-                        remote_file = genai.upload_file(path=fname, display_name=f"PDF_{count}")
-                        valid_files.append(remote_file)
-                        count += 1
-                        
-                    elif href.endswith('.zip'):
-                        # Extract PDFs from inside Zip
-                        with zipfile.ZipFile(io.BytesIO(file_data)) as z:
-                            for zipped_name in z.namelist():
-                                if zipped_name.lower().endswith(".pdf") and count < limit:
-                                    with z.open(zipped_name) as source, open(f"unzip_{count}.pdf", "wb") as target:
-                                        target.write(source.read())
-                                    
-                                    remote_file = genai.upload_file(path=f"unzip_{count}.pdf", display_name=f"Sheet_{count}")
-                                    valid_files.append(remote_file)
-                                    count += 1
-                except:
-                    continue
-        
-        # Wait for Google to process files
-        active_files = []
-        for file_ref in valid_files:
-            for _ in range(10): # Try for 10 seconds
-                if file_ref.state.name == "ACTIVE":
-                    active_files.append(file_ref)
-                    break
-                time.sleep(1)
-                file_ref = genai.get_file(file_ref.name)
+            # Logic to handle PDFs inside Zips or direct Links
+            pdf_bytes = None
+            display_name = "Doc"
+            
+            try:
+                if href.endswith('.pdf'):
+                    pdf_bytes = requests.get(href, headers=headers).content
+                    display_name = f"PDF_{count}"
+                elif href.endswith('.zip'):
+                    z_data = requests.get(href, headers=headers).content
+                    with zipfile.ZipFile(io.BytesIO(z_data)) as z:
+                        for f in z.namelist():
+                            if f.endswith('.pdf'):
+                                pdf_bytes = z.read(f)
+                                display_name = f
+                                break # Just grab first one per zip
+            except: continue
+
+            if pdf_bytes:
+                # 1. Save PDF locally for Gemini
+                pdf_name = f"temp_doc_{count}.pdf"
+                with open(pdf_name, "wb") as f: f.write(pdf_bytes)
                 
-        return active_files
+                # 2. Upload to Gemini (The Brain)
+                remote = genai.upload_file(path=pdf_name, display_name=display_name)
+                ai_files.append(remote)
+                
+                # 3. GENERATE IMAGE SNAPSHOT (The "Eye")
+                # This turns Page 1 of the PDF into a PNG Image
+                try:
+                    doc = fitz.open(pdf_name)
+                    page = doc.load_page(0)  # Grab Page 1
+                    pix = page.get_pixmap(dpi=150) # Take a screenshot
+                    img_name = f"preview_doc_{count}.png"
+                    pix.save(img_name)
+                    
+                    # Add to the text context so AI knows this image exists
+                    pdf_previews_text += f"VISUAL DOCUMENT: {display_name} | IMAGE_FILENAME: {img_name}\n"
+                except Exception as e:
+                    print(f"Image gen failed: {e}")
 
-    except:
-        return []
+                count += 1
+                
+        # Wait for Google processing
+        final_files = []
+        for f in ai_files:
+            while f.state.name == "PROCESSING":
+                time.sleep(1)
+                f = genai.get_file(f.name)
+            final_files.append(f)
+            
+        return final_files, pdf_previews_text
 
-# --- 2. TEXT SCRAPER ---
-@st.cache_resource(ttl=3600)
-def get_website_text():
-    urls = [
-        "https://hcmakers.com/products/", 
-        "https://hcmakers.com/quality/", 
-        "https://hcmakers.com/contact-us/",
-        "https://hcmakers.com/capabilities/"
-    ]
-    txt = "WEBSITE DATA:\n"
-    for u in urls:
-        try:
-            r = requests.get(u, headers={"User-Agent": "Mozilla/5.0"})
-            s = BeautifulSoup(r.content, 'html.parser')
-            txt += s.get_text(" ", strip=True)[:3000]
-        except: continue
-    return txt
+    except: return [], ""
 
 # --- INITIAL LOAD ---
-with st.spinner("Downloading Sell Sheets & Syncing Database..."):
-    # This grabs the PDFs live so the nutrition facts are available
-    live_files = get_knowledge_assets()
-    live_text = get_website_text()
+with st.spinner("Downloading Sell Sheets & Generating Preview Images..."):
+    # This takes 20s but builds the image database
+    web_images_text = get_website_media()
+    files_for_ai, pdf_images_text = process_documents()
 
 # --- CHAT LOGIC ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 def get_gemini_response(question):
-    # SYSTEM BRAIN
+    # SYSTEM PROMPT
     system_prompt = f"""
     You are the Senior Product Specialist for "Hispanic Cheese Makers-Nuestro Queso".
     
-    SOURCES:
-    1. I have attached the OFFICIAL SELL SHEETS (Visual PDFs). 
-       - READ THESE IMAGES. They contain the Nutritional Tables and Pack Specs.
-    2. WEBSITE TEXT: For general info/contacts.
+    ASSETS AVAILABLE:
+    1. **WEBSITE IMAGES:** URL links to images found on the website.
+    2. **DOCUMENT PREVIEWS:** Local PNG images that show the first page of the Sell Sheets (Nutrition/Specs).
     
     RULES:
-    1. **CHECK VISUALS:** If asked about Protein/Fat/Calories, LOOK AT THE PDF TABLE IMAGE explicitly.
-    2. **SPECIFICITY:** Do not ask "Which Fresco?" unless totally necessary. Default to the most common one found in the documents (usually Natural or Round).
-    3. **LANGUAGE:** Reply in the user's language (English or Spanish).
-    4. **DIRECT ANSWER:** Answer the number immediately. Example: "Fresco contains 5g of Protein per 1oz serving."
+    1. **SHOWING IMAGES:** If the user asks to see a product or document, YOU MUST display the image.
+       - Use this format: `![Description](FILENAME_OR_URL)`
+       - If they want to see the Sell Sheet/Specs/Nutrition visual, use the `IMAGE_FILENAME` from the 'DOCUMENT PREVIEWS' list below.
+       - If they want to see the Cheese product photo, use the 'URL' from the 'WEBSITE IMAGE LIBRARY'.
     
-    WEBSITE CONTEXT:
-    {live_text}
+    2. **DATA ACCURACY:** Read the text inside the attached PDFs for specific numbers.
+    3. **LANGUAGE:** English or Spanish.
+    4. **SCOPE:** Strictly restricted to company info.
+    
+    {web_images_text}
+    
+    {pdf_images_text}
     """
     
-    # Payload: Prompt + PDFs + Question
-    content_payload = [system_prompt] + live_files + [question]
+    package = [system_prompt] + files_for_ai + [question]
     
     try:
-        response = model.generate_content(content_payload)
+        response = model.generate_content(package)
         return response.text
     except:
-        return "Database refreshing. Please ask again."
+        return "Checking database..."
 
-# --- CHAT UI ---
+# --- UI ---
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask about nutrition, specs, or products...")
+    user_input = st.text_input("Ask about nutrition, specs, or ask to SEE the documents...")
     submit = st.form_submit_button("Ask Sales Rep")
 
 if submit and user_input:
@@ -174,7 +200,7 @@ if submit and user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing PDF Tables..."):
+        with st.spinner("Finding visual proof..."):
             response_text = get_gemini_response(user_input)
             st.markdown(response_text)
     
