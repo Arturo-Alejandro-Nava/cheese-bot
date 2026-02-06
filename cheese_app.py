@@ -7,12 +7,13 @@ import time
 import zipfile
 import io
 import fitz  # PyMuPDF
+import re
 
 # --- CONFIGURATION ---
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
-    st.error("No API Key found.")
+    st.error("No API Key found. Please add GOOGLE_API_KEY to Streamlit Secrets.")
     st.stop()
 
 genai.configure(api_key=API_KEY)
@@ -40,172 +41,226 @@ with col2:
 
 st.markdown("---")
 
-# --- 1. BYPASS IMAGE LOADER (The Fix) ---
-# We force-download the image so the browser doesn't get blocked by security
-def show_secure_image(url, caption):
-    try:
-        # User Agent makes us look like a real browser (not a bot)
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        resp = requests.get(url, headers=headers)
-        if resp.status_code == 200:
-            st.image(resp.content, caption=caption, width=600)
-        else:
-            st.error(f"Image blocked by website security (Status {resp.status_code})")
-    except:
-        st.write(f"Image available at: {url}")
+# --- 1. SECURE IMAGE RENDERER ---
+# This prevents broken images by downloading them on the server first
+def render_secure_image(url_or_path, caption):
+    if url_or_path.startswith("http"):
+        try:
+            # Fake browser headers to bypass security
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            r = requests.get(url_or_path, headers=headers, timeout=3)
+            if r.status_code == 200:
+                st.image(r.content, caption=caption, width=500)
+            else:
+                st.warning(f"Image protected: {url_or_path}")
+        except:
+            st.write(f"Image Link: {url_or_path}")
+    else:
+        # It is a local file (PDF screenshot)
+        if os.path.exists(url_or_path):
+            st.image(url_or_path, caption=caption, width=500)
 
-# --- 2. LIVE ASSETS ---
+# --- 2. OMNI-SCRAPER (Text + All Images) ---
 @st.cache_resource(ttl=3600) 
-def get_website_text():
+def get_comprehensive_data():
     urls = [
         "https://hcmakers.com/", 
         "https://hcmakers.com/products/", 
-        "https://hcmakers.com/capabilities/", # Plant info here
-        "https://hcmakers.com/contact-us/"
+        "https://hcmakers.com/capabilities/", # Factory/Plant
+        "https://hcmakers.com/contact-us/", # Office/Map
+        "https://hcmakers.com/quality/", # Lab/Certifications
+        "https://hcmakers.com/about-us/"
     ]
-    txt = "WEBSITE DATA:\n"
-    for u in urls:
+    
+    # We maintain two lists: One for text context, one for available images
+    site_text = ""
+    available_images = []
+    
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    # 1. Scrape the Website
+    for url in urls:
         try:
-            r = requests.get(u, headers={"User-Agent": "Mozilla/5.0"})
-            s = BeautifulSoup(r.content, 'html.parser')
-            txt += s.get_text(" ", strip=True)[:3000]
+            r = requests.get(url, headers=headers)
+            soup = BeautifulSoup(r.content, 'html.parser')
+            
+            # TEXT
+            clean_text = soup.get_text(" ", strip=True)[:4000]
+            site_text += f"\nPAGE: {url}\nCONTENT: {clean_text}\n"
+            
+            # IMAGES
+            imgs = soup.find_all('img')
+            for img in imgs:
+                src = img.get('data-src') or img.get('src') # Check lazy load
+                alt = img.get('alt', 'Image')
+                
+                if src:
+                    if src.startswith('/'): src = "https://hcmakers.com" + src
+                    # Filter junk
+                    if any(x in src.lower() for x in ['logo', 'icon', 'svg', 'blank', 'facebook']): continue
+                    # Clean up Alt Text
+                    if len(alt) < 3: alt = "Product or Facility Image"
+                    
+                    available_images.append(f"DESC: {alt} | URL: {src}")
+                    
         except: continue
-    return txt
 
+    # 2. Add Specific Hardcoded Images (Just to be safe for VIP items)
+    available_images.append("DESC: Cheese Plant Factory Facility Aerial View | URL: https://hcmakers.com/wp-content/uploads/2021/01/7777-1.jpg")
+    available_images.append("DESC: Quality Lab Inside Facility | URL: https://hcmakers.com/wp-content/uploads/2020/12/Quality_Lab.jpg")
+    available_images.append("DESC: Corporate Office Map or Building | URL: https://hcmakers.com/wp-content/uploads/2020/08/stock-photo-business-people.jpg") # Assuming standard stock usage if specific office photo is missing
+
+    return site_text, "\n".join(available_images)
+
+# --- 3. DOCUMENT PREVIEW GENERATOR ---
 @st.cache_resource(ttl=3600)
-def process_documents():
+def process_pdf_visuals():
     target_url = "https://hcmakers.com/resources/"
     headers = {"User-Agent": "Mozilla/5.0"}
-    ai_files = []
+    
+    ai_files = [] # For reading
+    doc_images_list = [] # For showing
     
     try:
-        resp = requests.get(target_url, headers=headers)
-        soup = BeautifulSoup(resp.content, 'html.parser')
+        r = requests.get(target_url, headers=headers)
+        soup = BeautifulSoup(r.content, 'html.parser')
         links = soup.find_all('a', href=True)
         count = 0
         
         for link in links:
             if count >= 6: break
             href = link['href']
-            pdf_bytes = None
             
-            try:
-                if href.endswith('.pdf'):
-                    pdf_bytes = requests.get(href, headers=headers).content
-                    name = href.split("/")[-1]
-                elif href.endswith('.zip'):
-                    z = requests.get(href, headers=headers).content
-                    with zipfile.ZipFile(io.BytesIO(z)) as zf:
-                        for f in zf.namelist():
-                            if f.endswith('.pdf'):
-                                pdf_bytes = zf.read(f)
-                                name = f
-                                break
-            except: continue
+            # Identify Downloadable Content
+            pdf_data = None
+            fname = "Doc"
+            
+            if href.endswith('.pdf'):
+                try: 
+                    pdf_data = requests.get(href, headers=headers).content
+                    fname = link.get_text(strip=True) or href.split('/')[-1]
+                except: continue
+            elif href.endswith('.zip'):
+                # Extract logic (simplified)
+                continue 
 
-            if pdf_bytes:
-                local_name = f"doc_{count}.pdf"
-                with open(local_name, "wb") as f: f.write(pdf_bytes)
-                remote = genai.upload_file(path=local_name, display_name=f"Doc_{count}")
+            if pdf_data:
+                # Save locally for AI
+                local_path = f"doc_{count}.pdf"
+                with open(local_path, "wb") as f: f.write(pdf_data)
+                
+                # Upload to AI
+                remote = genai.upload_file(path=local_path, display_name=fname)
                 ai_files.append(remote)
+                
+                # Snapshot Page 1 for Visual Display
+                try:
+                    doc = fitz.open(local_path)
+                    pix = doc[0].get_pixmap(dpi=150)
+                    img_path = f"preview_{count}.png"
+                    pix.save(img_path)
+                    doc_images_list.append(f"DESC: PDF Document Preview of {fname} | URL: {img_path}")
+                except: pass
+                
                 count += 1
                 
-        # Wait loop
-        active = []
+        # Wait for AI processing
+        valid_ai_files = []
         for f in ai_files:
             for _ in range(10):
                 if f.state.name == "ACTIVE":
-                    active.append(f)
+                    valid_ai_files.append(f)
                     break
                 time.sleep(1)
                 f = genai.get_file(f.name)
-        return active
-    except: return []
+        return valid_ai_files, "\n".join(doc_images_list)
 
-# --- LOAD DATA ---
-with st.spinner("Connecting to secure database..."):
-    web_text = get_website_text()
-    live_docs = process_documents()
+    except: return [], ""
 
-# --- CHAT LOGIC ---
+# --- LOAD ---
+with st.spinner("Indexing Site Media & Documents..."):
+    site_text, site_images_text = get_comprehensive_data()
+    ai_doc_files, doc_previews_text = process_pdf_visuals()
+
+# --- CHAT ENGINE ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-def get_gemini_response(question):
+def get_smart_response(question):
     # SYSTEM PROMPT
+    # We tell the AI to output a special tag [IMAGE: XYZ] if it finds a match
     system_prompt = f"""
     You are the Senior Product Specialist for "Hispanic Cheese Makers-Nuestro Queso".
     
-    ASSETS:
-    1. ATTACHED DOCS: Sell sheets with specs.
-    2. WEBSITE TEXT: Below.
+    DATABASE:
+    1. WEBSITE TEXT (Below): For facts.
+    2. ATTACHED PDFS: Read these for specific numbers/specs.
+    3. IMAGE LIBRARY (Below): A list of ALL available images (Web & PDF Previews).
     
     RULES:
-    1. **NO BROKEN IMAGES:** Do NOT output Markdown images `![alt](url)` because the website security blocks them.
-    2. **INSTEAD:** Describe the product vividly using text.
-    3. **DATA:** Use the PDFs for specific numbers (Nutrition, Pack Sizes).
+    1. **IMAGE RETRIEVAL:** If the user asks to see something (e.g. "Show me the plant", "Image of fresco", "See the office", "Sell sheet"), 
+       SCAN the "IMAGE LIBRARY". If you find a matching Description, start your response with:
+       `<<<IMG: URL_HERE>>>`
+       *(Only pick 1 best image match. If no good match, do not output the tag).*
+       
+    2. **OFFICE vs PLANT:** 
+       - "Plant/Factory" = Manufacturing facility images.
+       - "Office" = Corporate location images (Contact/People).
+       - Do not mix them up.
+       
+    3. **DATA:** Use PDFs for nutrition numbers.
     4. **LANGUAGE:** English or Spanish.
     
+    IMAGE LIBRARY:
+    {site_images_text}
+    {doc_previews_text}
+    
     WEBSITE CONTEXT:
-    {web_text}
+    {site_text}
     """
-    payload = [system_prompt] + live_docs + [question]
+    
+    payload = [system_prompt] + ai_doc_files + [question]
+    
     try:
         response = model.generate_content(payload)
         return response.text
-    except: return "Loading..."
+    except: return "Thinking..."
 
-# --- UI DISPLAY ---
+# --- UI RENDER ---
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
+        # Special Render: If previous message has an image path saved
+        if "image_url" in message:
+            render_secure_image(message["image_url"], "Reference Image")
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask about nutrition, cheese types, or the facility...")
-    submit = st.form_submit_button("Ask Agent")
+    user_input = st.text_input("Ask question...")
+    submit = st.form_submit_button("Send")
 
 if submit and user_input:
-    # 1. SHOW USER INPUT
+    # User Msg
     with st.chat_message("user"):
         st.markdown(user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-    # 2. CHECK FOR IMAGE KEYWORDS (The Python Force-Display)
-    # We intercept the request before the AI answers to check if you want an image
-    q_lower = user_input.lower()
-    
-    # === IMAGE BYPASS LOGIC ===
-    display_image_url = None
-    display_caption = ""
-    
-    if "plant" in q_lower or "factory" in q_lower or "facility" in q_lower or "building" in q_lower:
-        display_image_url = "https://hcmakers.com/wp-content/uploads/2021/01/PLANT_138.jpg"
-        display_caption = "State-of-the-Art SQF Level 3 Facility in Kent, IL"
-        
-    elif "fresco" in q_lower:
-        display_image_url = "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Fresco_Natural_10oz.png"
-        display_caption = "Queso Fresco (Award Winning)"
-        
-    elif "oaxaca" in q_lower:
-        display_image_url = "https://hcmakers.com/wp-content/uploads/2020/12/YBH_OAXACA_BALL_5lb_v3.png"
-        display_caption = "Oaxaca Melting Cheese"
-        
-    elif "cotija" in q_lower:
-        display_image_url = "https://hcmakers.com/wp-content/uploads/2020/12/YBH_cotija_quarter_5lb.png"
-        display_caption = "Cotija (Aged)"
-
-    # 3. GENERATE AI TEXT RESPONSE
+    # AI Msg
     with st.chat_message("assistant"):
-        
-        # A. Show the image FIRST if we found one match
-        if display_image_url:
-            show_secure_image(display_image_url, display_caption)
-            # Add to history invisible to AI but visible to user
-            st.session_state.chat_history.append({"role": "assistant", "content": f"**[Displaying Image: {display_caption}]**"})
-        
-        # B. Show the text answer
-        with st.spinner("Analyzing data..."):
-            response_text = get_gemini_response(user_input)
-            st.markdown(response_text)
-    
-    st.session_state.chat_history.append({"role": "assistant", "content": response_text})
+        with st.spinner("Analyzing..."):
+            raw_text = get_smart_response(user_input)
+            
+            # PARSE THE IMAGE TAG
+            # Look for <<<IMG: ...>>> pattern
+            image_match = re.search(r"<<<IMG: (.*?)>>>", raw_text)
+            
+            clean_text = re.sub(r"<<<IMG: .*?>>>", "", raw_text).strip()
+            
+            if image_match:
+                img_url = image_match.group(1)
+                render_secure_image(img_url, "Result found")
+                # Save to history with image
+                st.session_state.chat_history.append({"role": "assistant", "content": clean_text, "image_url": img_url})
+            else:
+                st.session_state.chat_history.append({"role": "assistant", "content": clean_text})
+            
+            st.markdown(clean_text)
