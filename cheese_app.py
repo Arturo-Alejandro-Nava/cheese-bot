@@ -6,13 +6,13 @@ import os
 import time
 import zipfile
 import io
-import fitz  # This is PyMuPDF (The PDF-to-Image tool)
+import fitz  # PyMuPDF (PDF-to-Image)
 
 # --- CONFIGURATION ---
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
-    st.error("Secrets Error: Please add GOOGLE_API_KEY to Streamlit.")
+    st.error("No API Key found. Please add GOOGLE_API_KEY to Streamlit Secrets.")
     st.stop()
 
 genai.configure(api_key=API_KEY)
@@ -24,7 +24,7 @@ st.set_page_config(
     page_icon="🧀"
 )
 
-# --- HEADER ---
+# --- HEADER (Logo + Title) ---
 col1, col2 = st.columns([1, 4])
 with col1:
     possible_names = ["logo", "logo.jpg", "logo.png", "logo.jpeg"]
@@ -40,150 +40,195 @@ with col2:
 
 st.markdown("---")
 
-# --- 1. MEDIA SCRAPER (Web Images) ---
-@st.cache_resource(ttl=3600) 
-def get_website_media():
-    urls = [
+# --- 1. THE "OMNI-SCRAPER" (Text + ALL Images + Video Links) ---
+@st.cache_resource(ttl=3600)
+def get_comprehensive_website_data():
+    # Pages to scan for images and text
+    target_urls = [
         "https://hcmakers.com/",
         "https://hcmakers.com/products/",
+        "https://hcmakers.com/capabilities/", # Factory images here
         "https://hcmakers.com/quality/",
-        "https://hcmakers.com/contact-us/"
+        "https://hcmakers.com/category-knowledge/",
+        "https://hcmakers.com/contact-us/",
+        "https://hcmakers.com/about-us/"
     ]
-    media_text = "\n--- WEBSITE IMAGE LIBRARY (Use these URLs to show products) ---\n"
     
+    knowledge_base = ""
+    # We create a massive list of every image URL found
+    image_library = "\n--- 📸 WEBSITE IMAGE REPOSITORY ---\n"
     headers = {"User-Agent": "Mozilla/5.0"}
-    for url in urls:
+    
+    seen_images = []
+
+    for url in target_urls:
         try:
             resp = requests.get(url, headers=headers)
             soup = BeautifulSoup(resp.content, 'html.parser')
+            
+            # 1. TEXT SCRAPING
+            # Extract cleaned text
+            page_text = soup.get_text(separator=' ', strip=True)
+            knowledge_base += f"\nSOURCE PAGE: {url}\nTEXT: {page_text[:5000]}\n"
+            
+            # 2. IMAGE HUNTING
             images = soup.find_all('img', src=True)
             for img in images:
                 src = img['src']
-                if src.startswith('/'): src = "https://hcmakers.com" + src
-                if any(x in src.lower() for x in ['product', 'cheese', 'fresco', 'panela', 'oaxaca']):
-                    alt = img.get('alt', 'Cheese Image')
-                    media_text += f"PRODUCT IMAGE: {alt} | LINK: {src}\n"
-        except: continue
-    return media_text
+                alt = img.get('alt', 'No Description')
+                
+                # Fix relative URLs
+                if src.startswith('/'): 
+                    src = "https://hcmakers.com" + src
+                
+                # FILTER: Remove icons, spacers, pixels, and logos
+                if any(x in src.lower() for x in ['.svg', 'icon', 'arrow', 'spacer', 'logo', 'facebook', 'linkedin']):
+                    continue
+                
+                # Check for duplication
+                if src not in seen_images:
+                    image_library += f"IMAGE DESCRIPTION: {alt} | URL: {src}\n"
+                    seen_images.append(src)
 
-# --- 2. DEEP DOC & IMAGE GENERATOR (The PDF-to-Picture Engine) ---
+            # 3. YOUTUBE HUNTING
+            iframes = soup.find_all('iframe', src=True)
+            for iframe in iframes:
+                if 'youtube' in iframe['src']:
+                    image_library += f"VIDEO LINK: {iframe['src']}\n"
+
+        except Exception as e:
+            continue
+            
+    return knowledge_base, image_library
+
+# --- 2. DEEP DOC & PREVIEW GENERATOR ---
 @st.cache_resource(ttl=3600)
-def process_documents():
+def process_live_documents():
     target_url = "https://hcmakers.com/resources/"
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # Files for AI to read
-    ai_files = []
-    # Dictionary of Image Filenames to show the user
-    pdf_previews_text = "\n--- DOWNLOADABLE DOCUMENT PREVIEWS (Images generated from PDFs) ---\n"
+    ai_files = [] # For the AI brain
+    doc_previews = "\n--- 📄 DOCUMENT PREVIEWS (SELL SHEET IMAGES) ---\n"
     
     try:
         resp = requests.get(target_url, headers=headers)
         soup = BeautifulSoup(resp.content, 'html.parser')
         links = soup.find_all('a', href=True)
         count = 0
-        limit = 6
+        limit = 8 # Read up to 8 documents
         
         for link in links:
             if count >= limit: break
             href = link['href']
             
-            # Logic to handle PDFs inside Zips or direct Links
+            # Find Content
             pdf_bytes = None
-            display_name = "Doc"
+            filename_label = "Document"
             
             try:
+                # Direct PDF Link
                 if href.endswith('.pdf'):
                     pdf_bytes = requests.get(href, headers=headers).content
-                    display_name = f"PDF_{count}"
+                    filename_label = href.split("/")[-1]
+                
+                # Zipped PDF
                 elif href.endswith('.zip'):
                     z_data = requests.get(href, headers=headers).content
                     with zipfile.ZipFile(io.BytesIO(z_data)) as z:
                         for f in z.namelist():
                             if f.endswith('.pdf'):
                                 pdf_bytes = z.read(f)
-                                display_name = f
-                                break # Just grab first one per zip
+                                filename_label = f
+                                break
             except: continue
 
+            # If we found a PDF, process it
             if pdf_bytes:
-                # 1. Save PDF locally for Gemini
-                pdf_name = f"temp_doc_{count}.pdf"
-                with open(pdf_name, "wb") as f: f.write(pdf_bytes)
+                # A. Save locally for AI
+                local_name = f"doc_{count}.pdf"
+                with open(local_name, "wb") as f: f.write(pdf_bytes)
                 
-                # 2. Upload to Gemini (The Brain)
-                remote = genai.upload_file(path=pdf_name, display_name=display_name)
+                # B. Upload to AI Brain
+                remote = genai.upload_file(path=local_name, display_name=filename_label)
                 ai_files.append(remote)
                 
-                # 3. GENERATE IMAGE SNAPSHOT (The "Eye")
-                # This turns Page 1 of the PDF into a PNG Image
+                # C. Generate Image Snapshot (Page 1)
                 try:
-                    doc = fitz.open(pdf_name)
-                    page = doc.load_page(0)  # Grab Page 1
-                    pix = page.get_pixmap(dpi=150) # Take a screenshot
-                    img_name = f"preview_doc_{count}.png"
-                    pix.save(img_name)
+                    doc = fitz.open(local_name)
+                    page = doc.load_page(0) # Page 1
+                    pix = page.get_pixmap(dpi=150)
+                    img_filename = f"preview_{count}.png"
+                    pix.save(img_filename)
                     
-                    # Add to the text context so AI knows this image exists
-                    pdf_previews_text += f"VISUAL DOCUMENT: {display_name} | IMAGE_FILENAME: {img_name}\n"
-                except Exception as e:
-                    print(f"Image gen failed: {e}")
-
-                count += 1
+                    # Register this image for the AI
+                    doc_previews += f"DOCUMENT NAME: {filename_label} | IMAGE_FILENAME: {img_filename}\n"
+                except: pass
                 
-        # Wait for Google processing
-        final_files = []
+                count += 1
+        
+        # Wait for Files
+        ready_files = []
         for f in ai_files:
             while f.state.name == "PROCESSING":
                 time.sleep(1)
                 f = genai.get_file(f.name)
-            final_files.append(f)
-            
-        return final_files, pdf_previews_text
+            if f.state.name == "ACTIVE":
+                ready_files.append(f)
+                
+        return ready_files, doc_previews
 
     except: return [], ""
 
 # --- INITIAL LOAD ---
-with st.spinner("Downloading Sell Sheets & Generating Preview Images..."):
-    # This takes 20s but builds the image database
-    web_images_text = get_website_media()
-    files_for_ai, pdf_images_text = process_documents()
+with st.spinner("Scraping Website Media & Downloading Sell Sheets..."):
+    # This might take ~20 seconds but creates a massive library
+    site_text, site_images = get_comprehensive_website_data()
+    doc_files, doc_images = process_live_documents()
 
 # --- CHAT LOGIC ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 def get_gemini_response(question):
-    # SYSTEM PROMPT
+    
+    # THE "MEDIA MANAGER" BRAIN
     system_prompt = f"""
     You are the Senior Product Specialist for "Hispanic Cheese Makers-Nuestro Queso".
     
-    ASSETS AVAILABLE:
-    1. **WEBSITE IMAGES:** URL links to images found on the website.
-    2. **DOCUMENT PREVIEWS:** Local PNG images that show the first page of the Sell Sheets (Nutrition/Specs).
+    RESOURCES:
+    1. **IMAGE REPOSITORY (Below)**: Contains links to images of products, the plant/facility, and logos.
+    2. **DOCUMENT PREVIEWS (Below)**: Contains PNG images of the first page of our Sell Sheets (Nutrition/Specs).
+    3. **PDF ATTACHMENTS**: Use these to read exact data/numbers.
+    4. **WEBSITE TEXT**: Use for context.
     
-    RULES:
-    1. **SHOWING IMAGES:** If the user asks to see a product or document, YOU MUST display the image.
-       - Use this format: `![Description](FILENAME_OR_URL)`
-       - If they want to see the Sell Sheet/Specs/Nutrition visual, use the `IMAGE_FILENAME` from the 'DOCUMENT PREVIEWS' list below.
-       - If they want to see the Cheese product photo, use the 'URL' from the 'WEBSITE IMAGE LIBRARY'.
+    VISUAL RULES:
+    1. **SHOWING WEBSITE IMAGES**: If the user asks to see the **plant**, **facility**, **factory**, **a specific cheese**, or **packaging**:
+       - Scan the "IMAGE REPOSITORY" for the best match.
+       - Use this format: `![Description](URL)`
+       - *Example:* "Here is an image of our facility: \n ![Plant](https://...)"
     
-    2. **DATA ACCURACY:** Read the text inside the attached PDFs for specific numbers.
-    3. **LANGUAGE:** English or Spanish.
-    4. **SCOPE:** Strictly restricted to company info.
+    2. **SHOWING DOCUMENT IMAGES**: If the user asks to see a **sell sheet**, **specs**, or **document**:
+       - Use the `IMAGE_FILENAME` from the "DOCUMENT PREVIEWS" list.
+       - Use this format: `![Sell Sheet](preview_0.png)`
     
-    {web_images_text}
+    3. **NO HALLUCINATIONS**: Do NOT invent URLs. If no image matches, reply with text only.
     
-    {pdf_images_text}
+    4. **VIDEOS**: Provide YouTube links if relevant (spicy cheese trends).
+    
+    {site_images}
+    
+    {doc_images}
+    
+    {site_text}
     """
     
-    package = [system_prompt] + files_for_ai + [question]
+    content_payload = [system_prompt] + doc_files + [question]
     
     try:
-        response = model.generate_content(package)
+        response = model.generate_content(content_payload)
         return response.text
-    except:
-        return "Checking database..."
+    except Exception as e:
+        return "Calibrating visual assets. Please try asking again."
 
 # --- UI ---
 for message in st.session_state.chat_history:
@@ -191,8 +236,8 @@ for message in st.session_state.chat_history:
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask about nutrition, specs, or ask to SEE the documents...")
-    submit = st.form_submit_button("Ask Sales Rep")
+    user_input = st.text_input("Ask about cheese, nutrition, or ask for images/sell sheets...")
+    submit = st.form_submit_button("Ask Agent")
 
 if submit and user_input:
     with st.chat_message("user"):
@@ -200,7 +245,7 @@ if submit and user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
     with st.chat_message("assistant"):
-        with st.spinner("Finding visual proof..."):
+        with st.spinner("Finding visuals..."):
             response_text = get_gemini_response(user_input)
             st.markdown(response_text)
     
