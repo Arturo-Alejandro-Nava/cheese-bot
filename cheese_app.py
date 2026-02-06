@@ -8,6 +8,7 @@ import zipfile
 import io
 import fitz  # PyMuPDF
 import re
+from urllib.parse import urljoin, unquote
 
 # --- CONFIGURATION ---
 try:
@@ -49,91 +50,92 @@ def render_secure_image(url_or_path, caption):
         return
 
     try:
-        # High-security bypass headers
         headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://hcmakers.com/",
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
         }
         r = requests.get(url_or_path, headers=headers, timeout=5)
-        
         if r.status_code == 200:
             st.image(r.content, caption=caption, width=500)
         else:
-            st.markdown(f"[View Image Externally]({url_or_path})")
+            st.markdown(f"**Image Found:** [Click to View]({url_or_path})")
     except:
-        st.markdown(f"[View Image Source]({url_or_path})")
+        st.markdown(f"**Image Link:** [View Original]({url_or_path})")
 
-# --- 2. THE "DEEP SCRAPER" (Specific Page Targeting) ---
+# --- 2. THE INTELLIGENT SCRAPER ---
 @st.cache_resource(ttl=3600) 
 def get_comprehensive_data():
-    # We define the targets
-    target_pages = [
+    urls = [
         "https://hcmakers.com/",
-        "https://hcmakers.com/contact-us/",  # High value for Office/Building images
-        "https://hcmakers.com/about-us/",    # High value for History/People
-        "https://hcmakers.com/capabilities/", # Factory
-        "https://hcmakers.com/products/",    # Cheeses
+        "https://hcmakers.com/products/", # We will scrape aggressively here
+        "https://hcmakers.com/capabilities/", 
+        "https://hcmakers.com/contact-us/",
+        "https://hcmakers.com/quality/",
+        "https://hcmakers.com/about-us/"
     ]
     
     site_text = ""
-    available_images = []
-    seen_urls = []
-    
-    headers = {"User-Agent": "Mozilla/5.0"}
-    
-    # HARDCODED VIP LIST (Guaranteed Hits)
-    vip_images = [
-        ("PLANT / FACTORY (Aerial)", "https://hcmakers.com/wp-content/uploads/2021/01/7777-1.jpg"),
-        ("PLANT / FACTORY (Inside)", "https://hcmakers.com/wp-content/uploads/2021/01/PLANT_138.jpg"),
-        ("QUALITY LAB", "https://hcmakers.com/wp-content/uploads/2020/12/Quality_Lab.jpg"),
+    # Hardcoded Fallbacks (Guaranteed to work if site structure changes)
+    available_images = [
+        "DESC: Manufacturing Plant / Factory | URL: https://hcmakers.com/wp-content/uploads/2021/01/PLANT_138.jpg",
+        "DESC: Corporate Office / Headquarters | URL: https://hcmakers.com/wp-content/uploads/2020/08/display.jpg",
+        "DESC: Quality Lab | URL: https://hcmakers.com/wp-content/uploads/2020/12/Quality_Lab.jpg"
     ]
     
-    for desc, url in vip_images:
-        available_images.append(f"DESC: {desc} | URL: {url}")
-        seen_urls.append(url)
+    headers = {"User-Agent": "Mozilla/5.0"}
+    seen_urls = []
 
-    # LIVE SCRAPING
-    for url in target_pages:
+    for url in urls:
         try:
             r = requests.get(url, headers=headers)
             soup = BeautifulSoup(r.content, 'html.parser')
             
-            # TEXT
+            # A. TEXT
             clean_text = soup.get_text(" ", strip=True)[:5000]
             site_text += f"\nPAGE: {url}\nCONTENT: {clean_text}\n"
             
-            # IMAGES (The fix: Less filtering on 'Contact' page)
+            # B. INTELLIGENT IMAGE EXTRACTION
             imgs = soup.find_all('img')
             for img in imgs:
+                # Get URL
                 src = img.get('data-src') or img.get('src')
-                alt = img.get('alt', 'Image')
+                if not src: continue
                 
-                if src:
-                    if src.startswith('/'): src = "https://hcmakers.com" + src
-                    
-                    # Deduplicate
-                    if src in seen_urls: continue
-                    
-                    # FILTER LOGIC
-                    # If we are on the contact page, grab EVERYTHING that isn't a tiny icon
-                    is_contact_page = "contact-us" in url
-                    is_junk = any(x in src.lower() for x in ['logo', 'icon', 'svg', 'spacer', 'facebook', 'linkedin', 'twitter'])
-                    
-                    if not is_junk:
-                        # Enhance the description for the AI
-                        if is_contact_page:
-                            available_images.append(f"DESC: IMAGE FOUND ON CONTACT PAGE (Possible Office/HQ) - {alt} | URL: {src}")
-                        else:
-                            available_images.append(f"DESC: {alt} | URL: {src}")
-                        
+                # Make absolute URL
+                src = urljoin("https://hcmakers.com", src)
+                
+                if src in seen_urls: continue
+                
+                # Check FILENAME for clues (Crucial for "Bites")
+                filename_keywords = src.split('/')[-1].replace('-', ' ').replace('_', ' ').lower()
+                
+                # Get Alt Text
+                alt = img.get('alt', '').strip()
+                
+                # Combined Clues
+                description_clues = f"{alt} {filename_keywords}"
+                
+                # Filter Logic (Less Strict on Products Page)
+                is_product_page = "products" in url
+                is_junk = any(x in description_clues for x in ['logo', 'icon', 'svg', 'spacer', 'facebook', 'twitter'])
+                
+                if not is_junk:
+                    # If on product page, assume ANY image might be a product
+                    if is_product_page and ('bites' in description_clues or 'pkg' in description_clues or 'fresco' in description_clues or 'queso' in description_clues):
+                        available_images.append(f"DESC: {description_clues} | URL: {src}")
                         seen_urls.append(src)
-                        
+                    
+                    # For other pages, keep "Quality" images
+                    elif "upload" in src and len(src) > 50:
+                        available_images.append(f"DESC: {description_clues} | URL: {src}")
+                        seen_urls.append(src)
+
         except: continue
 
     return site_text, "\n".join(available_images)
 
-# --- 3. DOCUMENT PROCESSING (Unchanged) ---
+# --- 3. DOCUMENT PROCESSOR ---
 @st.cache_resource(ttl=3600)
 def process_pdf_visuals():
     target_url = "https://hcmakers.com/resources/"
@@ -148,68 +150,73 @@ def process_pdf_visuals():
         for link in links:
             if count >= 6: break
             href = link['href']
+            
             pdf_data = None
             fname = "Doc"
+            
             if href.endswith('.pdf'):
                 try: 
                     pdf_data = requests.get(href, headers=headers).content
                     fname = href.split('/')[-1]
                 except: continue
+            elif href.endswith('.zip'):
+                continue
+
             if pdf_data:
                 local_path = f"doc_{count}.pdf"
                 with open(local_path, "wb") as f: f.write(pdf_data)
                 remote = genai.upload_file(path=local_path, display_name=fname)
                 ai_files.append(remote)
+                
+                # Generate Document Preview
                 try:
                     doc = fitz.open(local_path)
                     pix = doc[0].get_pixmap(dpi=150)
                     img_path = f"preview_{count}.png"
                     pix.save(img_path)
-                    doc_images_list.append(f"DESC: PDF SELL SHEET PREVIEW {fname} | URL: {img_path}")
+                    doc_images_list.append(f"DESC: PDF SELL SHEET {fname} | FILE_PATH: {img_path}")
                 except: pass
                 count += 1
+        
         active = []
         for f in ai_files:
-            while f.state.name == "PROCESSING":
+            for _ in range(10):
+                if f.state.name == "ACTIVE": active.append(f)
                 time.sleep(1)
                 f = genai.get_file(f.name)
-            if f.state.name == "ACTIVE": active.append(f)
         return active, "\n".join(doc_images_list)
     except: return [], ""
 
-# --- LOAD ---
-with st.spinner("Analyzing Website & Retrieving Assets..."):
+# --- LOAD DATA ---
+with st.spinner("Analyzing Catalog Files & Website Images..."):
     site_text, site_images_text = get_comprehensive_data()
     ai_doc_files, doc_previews_text = process_pdf_visuals()
 
-# --- CHAT ENGINE ---
+# --- BRAIN ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 def get_smart_response(question):
     
     system_prompt = f"""
-    You are the Product Specialist for "Hispanic Cheese Makers".
+    You are the Product Specialist for "Hispanic Cheese Makers-Nuestro Queso".
     
     ASSET LIBRARY:
     {site_images_text}
     {doc_previews_text}
     
-    WEBSITE DATA:
-    {site_text}
-    
     RULES:
-    1. **IMAGE REQUESTS:** If user asks for an image, SEARCH the 'ASSET LIBRARY'. 
-       - Look for the best match. 
-       - If asking for "Office" or "Building" or "HQ", check images labeled "CONTACT PAGE" first.
-       - Use syntax: `<<<IMG: URL_HERE>>>`
-       - **CRITICAL:** IF YOU DO NOT FIND A GOOD MATCH, SAY "I don't have that specific photo." DO NOT SHOW THE FACTORY/PLANT if they asked for the OFFICE.
+    1. **IMAGE FINDING:** You must hunt for images in the "ASSET LIBRARY".
+       - Read the "DESC" (Description) fields carefully.
+       - Use "Fuzzy Matching". If user asks for "Bites" and you see "DESC: oaxaca bites pkg image", USE IT.
+       - Look for filenames. 'oaxaca-bites.png' matches "Oaxaca Bites".
+       - **Output:** `<<<IMG: URL_OR_FILE_PATH>>>`
     
     2. **PLANT vs OFFICE:**
-       - Plant/Factory = Kent, IL (Manufacturing).
-       - Office = Chicago (HQ). They are different.
-       
-    3. **DATA:** Use PDFs for nutrition.
+       - Plant/Factory: Use the Plant aerial image from library.
+       - Office: Use the 'Corporate Office / Headquarters' link in the library.
+    
+    3. **DATA:** Use PDFs for specific nutrition numbers.
     """
     
     payload = [system_prompt] + ai_doc_files + [question]
@@ -217,13 +224,13 @@ def get_smart_response(question):
     try:
         response = model.generate_content(payload)
         return response.text
-    except: return "Thinking..."
+    except: return "Checking visual assets..."
 
 # --- UI ---
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         if "image_url" in message:
-            render_secure_image(message["image_url"], "Result")
+            render_secure_image(message["image_url"], "Found")
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
@@ -236,7 +243,7 @@ if submit and user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
     with st.chat_message("assistant"):
-        with st.spinner("Searching..."):
+        with st.spinner("Scanning..."):
             raw_text = get_smart_response(user_input)
             
             img_match = re.search(r"<<<IMG: (.*?)>>>", raw_text)
@@ -244,7 +251,7 @@ if submit and user_input:
             
             if img_match:
                 img_url = img_match.group(1)
-                render_secure_image(img_url, "Found")
+                render_secure_image(img_url, "Found Result")
                 st.session_state.chat_history.append({"role": "assistant", "content": clean_text, "image_url": img_url})
             else:
                 st.session_state.chat_history.append({"role": "assistant", "content": clean_text})
