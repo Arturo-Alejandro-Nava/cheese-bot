@@ -1,75 +1,108 @@
 import streamlit as st
 import google.generativeai as genai
-import os
+import requests
+from bs4 import BeautifulSoup
 
 # --- CONFIGURATION ---
-# 1. This grabs the key securely from the Cloud Safe (Streamlit Secrets)
 API_KEY = st.secrets["GOOGLE_API_KEY"]
-
-# 2. Connect to the Vision-Enabled "Gemini 2.0" Engine
 genai.configure(api_key=API_KEY)
 model = genai.GenerativeModel('gemini-2.0-flash')
 
-# --- THE WEBPAGE LAYOUT ---
-st.set_page_config(page_title="Nuestro Queso Sales Assistant", page_icon="🧀")
+# --- WEBPAGE CONFIG ---
+st.set_page_config(page_title="Nuestro Queso Assistant", page_icon="🧀")
 
-st.title("🧀 Nuestro Queso - 24/7 Virtual Sales Rep")
-st.write("Upload a Product Catalog, Spec Sheet, or Sell Sheet.")
+# --- HEADER ---
+col1, col2 = st.columns([1, 5])
+with col1:
+    st.write("🧀")
+with col2:
+    st.title("Nuestro Queso - Digital Concierge")
 
-# --- STEP 1: UPLOAD HANDLER ---
-# Food companies use images/PDFs heavily, so we allow both.
-uploaded_file = st.file_uploader("Upload Catalog/Sell Sheet", type=["pdf", "png", "jpg", "jpeg"])
-
-# Check if a file is uploaded
-if uploaded_file is not None:
+# --- THE AUTOMATIC WEB SCRAPER ---
+# We use @st.cache_resource so it only scrapes once per hour/session,
+# not every time you ask a question (keeps it fast).
+@st.cache_resource(ttl=3600) 
+def load_live_website_data():
+    # THE LIST OF PAGES TO MONITOR
+    # (The bot will read these exact pages for updates)
+    urls = [
+        "https://hcmakers.com/",
+        "https://hcmakers.com/products/",
+        "https://hcmakers.com/capabilities/",
+        "https://hcmakers.com/quality/",
+        "https://hcmakers.com/category-knowledge/",
+        "https://hcmakers.com/contact-us/",
+        "https://hcmakers.com/about-us/"
+    ]
     
-    # --- STEP 2: HANDLE THE FILE ---
-    # We save the file securely to a temp folder so the AI can "Look" at it.
-    with open("temp_product_catalog.pdf", "wb") as f:
-        f.write(uploaded_file.getbuffer())
+    combined_text = ""
     
-    st.success("✅ Product Data Loaded. Ready for inquiries.")
+    try:
+        for url in urls:
+            # Visit the page
+            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            if response.status_code == 200:
+                # Clean the HTML
+                soup = BeautifulSoup(response.content, 'html.parser')
+                
+                # Get the raw text, remove extra whitespace
+                page_text = soup.get_text(separator=' ', strip=True)
+                
+                # Add to our knowledge bank
+                combined_text += f"\n--- SOURCE: {url} ---\n{page_text}\n"
+    except Exception as e:
+        return f"Error connecting to website: {e}"
+        
+    return combined_text
 
-    # --- STEP 3: THE CHAT FORM (Supports 'Enter' Key) ---
-    with st.form(key='chat_form'):
-        user_question = st.text_input("Ask a question about our cheeses, specs, or pairings:")
-        submit_button = st.form_submit_button("Ask Sales Rep")
+# Load the data (Display a small loading spinner initially)
+with st.spinner("Syncing with live website data..."):
+    website_knowledge = load_live_website_data()
 
-    if submit_button:
-        if user_question:
-            try:
-                with st.spinner("Consulting the cheesemonger..."):
-                    
-                    # 1. Upload the file to Google's Enterprise Brain
-                    sample_file = genai.upload_file(path="temp_product_catalog.pdf", display_name="Cheese Catalog")
-                    
-                    # 2. DEFINE THE CHEESE EXPERT BRAIN
-                    system_prompt = """
-                    You are a Senior Sales Representative for "Nuestro Queso" (Hispanic Cheese Makers).
-                    The user has uploaded a product catalog or Sell Sheet.
-                    
-                    YOUR GOAL: Educate the buyer and recommend the perfect cheese from the document.
-                    
-                    RULES:
-                    1. Answer strictly based on the text/images in the provided document.
-                    2. PRODUCT MATCHING:
-                       - If they ask for MELTING: Recommend Oaxaca (The "Mexican String Cheese").
-                       - If they ask for GRILLING/FRYING: Recommend Panela or Queso Blanco (Mention they do not melt).
-                       - If they ask for TOPPING/SALTY: Recommend Cotija (The "Parmesan of Mexico").
-                    3. ALWAYS mention specific awards (like "Gold Medal Winner") if the text mentions them.
-                    4. Check for Specs: If asked about pack sizes, ingredients, or allergens, be precise.
-                    5. Tone: Helpful, professional, and proud of the quality (SQF Level 3 Plant).
-                    6. If the info is not in the file, say: "I'd check with our sales team directly at sales@hcmakers.com just to be sure."
-                    """
-                    
-                    # 3. Ask the Question
-                    response = model.generate_content([system_prompt, sample_file, user_question])
-                    
-                    # 4. Display Result
-                    st.write("### 🧀 Sales Rep Answer:")
-                    st.write(response.text)
-                    
-            except Exception as e:
-                st.error(f"System Error: {e}")
-        else:
-            st.warning("Please type a question first.")
+st.success("✅ Connected to HCMakers.com Live Data")
+
+# --- THE CHAT LOGIC ---
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+def get_gemini_response(question):
+    # Prompt logic
+    system_prompt = f"""
+    You are the official Customer Service AI for "Nuestro Queso" (Hispanic Cheese Makers).
+    
+    SOURCE DATA:
+    I have scraped the live text from the official website. Use the text below to answer questions.
+    
+    RULES:
+    1. Answer strictly based on the text provided below.
+    2. USE EXACT DETAILS: If the text mentions specific award years, factory size (75k sq ft), or contact names, use them.
+    3. NAVIGATION: If the information comes from a specific URL (like the products page), provide that link to the user.
+    4. TONE: Professional, warm, expert.
+    5. LANGUAGE: Answer in the language the user uses (English or Spanish).
+    
+    WEBSITE DATA START:
+    {website_knowledge}
+    WEBSITE DATA END
+    """
+    
+    response = model.generate_content([system_prompt, question])
+    return response.text
+
+# --- USER INTERFACE ---
+for message in st.session_state.chat_history:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+user_input = st.chat_input("How can I help you? / ¿Cómo te puedo ayudar?")
+
+if user_input:
+    with st.chat_message("user"):
+        st.markdown(user_input)
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            response_text = get_gemini_response(user_input)
+            st.markdown(response_text)
+    
+    st.session_state.chat_history.append({"role": "assistant", "content": response_text})
