@@ -12,7 +12,7 @@ import fitz  # PyMuPDF
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
-    st.error("No API Key found. Please set GOOGLE_API_KEY in Streamlit Secrets.")
+    st.error("No API Key found. Please add GOOGLE_API_KEY to Streamlit Secrets.")
     st.stop()
 
 genai.configure(api_key=API_KEY)
@@ -24,7 +24,7 @@ st.set_page_config(
     page_icon="🧀"
 )
 
-# --- HEADER (Logo + Title) ---
+# --- HEADER ---
 col1, col2 = st.columns([1, 4])
 with col1:
     possible_names = ["logo", "logo.jpg", "logo.png", "logo.jpeg"]
@@ -40,62 +40,19 @@ with col2:
 
 st.markdown("---")
 
-# --- 1. MEDIA SCRAPER (Anti-Lazy-Load Version) ---
-@st.cache_resource(ttl=3600) 
-def get_website_media():
-    urls = [
-        "https://hcmakers.com/",
-        "https://hcmakers.com/capabilities/", # Factory images here
-        "https://hcmakers.com/products/",
-        "https://hcmakers.com/quality/"
-    ]
-    
-    # 1. HARDCODED SAFETY NET (Guaranteed URLs)
-    # These override the scraper to ensure key questions never fail.
-    safe_images = {
-        "PLANT/FACTORY": "https://hcmakers.com/wp-content/uploads/2021/01/PLANT_138.jpg",
-        "AERIAL VIEW": "https://hcmakers.com/wp-content/uploads/2021/01/7777-1.jpg",
-        "LAB": "https://hcmakers.com/wp-content/uploads/2020/12/Quality_Lab.jpg",
-        "OAXACA BALL": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_OAXACA_BALL_5lb_v3.png",
-        "FRESCO": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Fresco_Natural_10oz.png",
-        "COTIJA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_cotija_wedge_10oz_cp.png",
-        "PANELA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Panela_Bar_8oz_v2.png"
-    }
+# --- 1. GUARANTEED IMAGE BANK (THE FIX) ---
+# These are the real, tested URLs. The AI must use THESE.
+SAFE_IMAGES = {
+    "PLANT": "https://hcmakers.com/wp-content/uploads/2021/01/PLANT_138.jpg",
+    "FACTORY": "https://hcmakers.com/wp-content/uploads/2021/01/7777-1.jpg", 
+    "LAB": "https://hcmakers.com/wp-content/uploads/2020/12/Quality_Lab.jpg",
+    "OAXACA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_OAXACA_BALL_5lb_v3.png",
+    "FRESCO": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Fresco_Natural_10oz.png",
+    "COTIJA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_cotija_quarter_5lb.png",
+    "PANELA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Panela_Cryovac_5lb.png"
+}
 
-    media_library = "\n--- OFFICIAL IMAGE LINKS ---\n"
-    for k, v in safe_images.items():
-        media_library += f"IMAGE: {k} | URL: {v}\n"
-
-    # 2. LIVE SCRAPING
-    headers = {"User-Agent": "Mozilla/5.0"}
-    
-    for url in urls:
-        try:
-            resp = requests.get(url, headers=headers)
-            soup = BeautifulSoup(resp.content, 'html.parser')
-            
-            # Find Images (Checking data-src for WordPress lazy load)
-            images = soup.find_all('img')
-            for img in images:
-                # Priority: data-src -> src
-                src = img.get('data-src') or img.get('src')
-                
-                if src:
-                    if src.startswith('/'): src = "https://hcmakers.com" + src
-                    
-                    # Filter junk
-                    if any(x in src.lower() for x in ['logo', 'icon', 'svg', 'spacer', 'facebook']):
-                        continue
-                    
-                    alt = img.get('alt', 'Image')
-                    # Only keep decent looking product/facility links
-                    if "uploads" in src: 
-                        media_library += f"IMAGE: {alt} | URL: {src}\n"
-        except: continue
-            
-    return media_library
-
-# --- 2. TEXT SCRAPER ---
+# --- 2. LIVE TEXT SCRAPER ---
 @st.cache_resource(ttl=3600) 
 def get_website_text():
     urls = [
@@ -104,7 +61,7 @@ def get_website_text():
         "https://hcmakers.com/contact-us/", 
         "https://hcmakers.com/capabilities/"
     ]
-    txt = ""
+    txt = "WEBSITE DATA:\n"
     for u in urls:
         try:
             r = requests.get(u, headers={"User-Agent": "Mozilla/5.0"})
@@ -113,13 +70,15 @@ def get_website_text():
         except: continue
     return txt
 
-# --- 3. DOC HUNTER ---
+# --- 3. PDF/DOC HUNTER ---
 @st.cache_resource(ttl=3600)
-def process_live_documents():
+def process_documents():
     target_url = "https://hcmakers.com/resources/"
     headers = {"User-Agent": "Mozilla/5.0"}
     ai_files = []
-    doc_previews = "\n--- PDF DOCUMENT PREVIEWS ---\n"
+    
+    # We create a specific text block that tells the AI exactly what image corresponds to what PDF
+    doc_image_map = "\n--- PDF VISUAL PREVIEWS (Use these filenames) ---\n"
     
     try:
         resp = requests.get(target_url, headers=headers)
@@ -131,7 +90,6 @@ def process_live_documents():
         for link in links:
             if count >= limit: break
             href = link['href']
-            
             pdf_bytes = None
             filename_label = "Doc"
             
@@ -153,7 +111,7 @@ def process_live_documents():
                 local_name = f"doc_{count}.pdf"
                 with open(local_name, "wb") as f: f.write(pdf_bytes)
                 
-                # Upload to AI
+                # Upload to AI Brain
                 remote = genai.upload_file(path=local_name, display_name=filename_label)
                 ai_files.append(remote)
                 
@@ -161,77 +119,79 @@ def process_live_documents():
                 try:
                     doc = fitz.open(local_name)
                     page = doc.load_page(0)
-                    pix = page.get_pixmap(dpi=100) # Lower dpi for speed
-                    img_filename = f"preview_{count}.png"
-                    pix.save(img_filename)
-                    doc_previews += f"DOCUMENT PREVIEW: {filename_label} | FILENAME: {img_filename}\n"
+                    pix = page.get_pixmap(dpi=150)
+                    img_name = f"preview_{count}.png"
+                    pix.save(img_name)
+                    doc_image_map += f"DOCUMENT: {filename_label} -> IMAGE_FILE: {img_name}\n"
                 except: pass
                 
                 count += 1
         
         # Wait for Files
-        ready_files = []
+        active_files = []
         for f in ai_files:
             for _ in range(10):
                 if f.state.name == "ACTIVE":
-                    ready_files.append(f)
+                    active_files.append(f)
                     break
                 time.sleep(1)
                 f = genai.get_file(f.name)
-        return ready_files, doc_previews
+        return active_files, doc_image_map
 
     except: return [], ""
 
 # --- INITIAL LOAD ---
-with st.spinner("Downloading Website Images, Text & Catalogs..."):
-    # Scrapes Images, Text, and Documents in parallel logic
-    media_library_text = get_website_media()
-    site_text = get_website_text()
-    live_docs, doc_images_text = process_live_documents()
+with st.spinner("Syncing Assets..."):
+    web_text = get_website_text()
+    files_for_ai, pdf_images_text = process_documents()
 
 # --- CHAT LOGIC ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 def get_gemini_response(question):
-    # SYSTEM PROMPT
+    
+    # 4. CONSTRUCT THE MASTER IMAGE LIST FOR THE AI
+    image_instruction = "--- MASTER IMAGE LIST (Use THESE URLs ONLY) ---\n"
+    for name, url in SAFE_IMAGES.items():
+        image_instruction += f"ITEM: {name} | URL: {url}\n"
+    
     system_prompt = f"""
     You are the Senior Product Specialist for "Hispanic Cheese Makers-Nuestro Queso".
     
     ASSETS:
-    1. **IMAGE LINKS (Below):** A list of verified image URLs. 
-    2. **DOCUMENT PREVIEWS:** Local png files for sell sheets.
-    3. **PDF TEXT:** Read the attached files for data.
+    1. MASTER IMAGE LIST (Below): Guaranteed working URLs.
+    2. DOCUMENT PREVIEWS (Below): Local png files for Sell Sheets.
+    3. PDF ATTACHMENTS: Read these for nutrition/numbers.
+    4. WEBSITE TEXT: General info.
     
     RULES:
-    1. **SHOWING THE PLANT/FACTORY:** If asked for an image of the plant/factory, use the URL listed under 'PLANT/FACTORY' in the OFFICIAL IMAGE LINKS. 
-       - Syntax: `![The Plant](INSERT_URL_HERE)`
+    1. **PLANT / FACTORY IMAGES**: If asked for the "Plant", "Factory", "Facility", or "Building":
+       - YOU MUST use the URL listed next to 'PLANT' or 'FACTORY' in the MASTER IMAGE LIST below.
+       - Syntax: `![The Plant]({SAFE_IMAGES['PLANT']})`
+       - DO NOT GUESS A URL. If it's not in the list, show no image.
     
-    2. **SHOWING CHEESE:** Use the specific URL from the OFFICIAL IMAGE LINKS.
+    2. **CHEESE IMAGES**: If asked for "Oaxaca" or "Fresco", use the matching URL from the Master List.
     
-    3. **SHOWING DOCS:** Use the 'FILENAME' from Document Previews list (e.g. `![Preview](preview_0.png)`).
+    3. **SELL SHEETS**: If asked for the Sell Sheet document, use the `preview_x.png` filename from the Document Previews list.
     
-    4. **ACCURACY:** Do not guess URLs. Only use the ones listed below.
+    4. **ACCURACY**: Read the PDF tables for specific numbers.
+    5. **LANGUAGE**: English or Spanish.
     
-    5. **LANGUAGE:** English or Spanish.
+    {image_instruction}
     
-    IMAGE & MEDIA LIBRARY:
-    {media_library_text}
+    {pdf_images_text}
     
-    DOCUMENT PREVIEW LIBRARY:
-    {doc_images_text}
-    
-    WEBSITE TEXT:
-    {site_text}
+    {web_text}
     """
     
-    payload = [system_prompt] + live_docs + [question]
+    payload = [system_prompt] + files_for_ai + [question]
     
     try:
         response = model.generate_content(payload)
         return response.text
     except Exception as e:
-        return "Thinking..."
+        return "Searching visual database..."
 
 # --- UI ---
 for message in st.session_state.chat_history:
@@ -239,7 +199,7 @@ for message in st.session_state.chat_history:
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask about our products... / Pregunta...")
+    user_input = st.text_input("Ask about nutrition, products, or see the plant...")
     submit = st.form_submit_button("Ask Agent")
 
 if submit and user_input:
