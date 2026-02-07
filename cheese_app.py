@@ -22,78 +22,75 @@ st.set_page_config(page_title="Hispanic Cheese Makers-Nuestro Queso", page_icon=
 # --- HEADER ---
 col1, col2 = st.columns([1, 4])
 with col1:
-    possible = ["logo.jpg", "logo.png", "logo.jpeg", "logo"]
+    possible_names = ["logo.jpg", "logo.png", "logo.jpeg", "logo"]
     found = False
-    for p in possible:
+    for p in possible_names:
         if os.path.exists(p):
-            st.image(p, width=130); found=True; break
+            st.image(p, width=130); found = True; break
     if not found: st.write("🧀")
 
 with col2:
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 st.markdown("---")
 
-# --- 1. LOAD MANUAL LINKS (The Video Fix) ---
+# --- 1. LOAD MANUAL LINKS (The Video Brain) ---
 @st.cache_resource
-def load_manual_text_data():
-    video_content = ""
-    # Look for video_links.txt in the folder
+def load_video_library():
+    content = ""
+    # Try reading the file locally
     if os.path.exists("video_links.txt"):
-        with open("video_links.txt", "r", encoding="utf-8") as f:
-            video_content = f.read()
+        with open("video_links.txt", "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
     else:
-        video_content = "No manual video links uploaded."
-        
-    return video_content
+        # Fallback if file isn't found
+        content = "No 'video_links.txt' found. Please ask admin to upload."
+    return content
 
-# --- 2. LOAD LIVE WEBSITE TEXT ---
+# --- 2. LIVE WEBSITE TEXT ---
 @st.cache_resource(ttl=3600) 
-def get_website_text():
+def get_live_web_text():
     urls = [
         "https://hcmakers.com/", 
         "https://hcmakers.com/products/", 
         "https://hcmakers.com/capabilities/",
-        "https://hcmakers.com/quality/", 
-        "https://hcmakers.com/contact-us/",
-        "https://hcmakers.com/about-us/",
-        "https://hcmakers.com/category-knowledge/"
+        "https://hcmakers.com/contact-us/"
     ]
-    text_data = ""
+    data = ""
     headers = {"User-Agent": "Mozilla/5.0"}
-    
     for url in urls:
         try:
             r = requests.get(url, headers=headers)
             soup = BeautifulSoup(r.content, 'html.parser')
-            text_data += f"\n--- SOURCE: {url} ---\n{soup.get_text(' ', strip=True)[:4000]}\n"
+            data += f"\nSOURCE: {url}\n{soup.get_text(' ', strip=True)[:3000]}\n"
         except: continue
+    return data
+
+# --- 3. LIVE PDF DOWNLOADER ---
+@st.cache_resource(ttl=3600)
+def process_live_pdfs():
+    ai_docs = []
+    try:
+        # Only grab PDFs if user asks for specific hard data (keeps chat fast)
+        # But here we load them into memory just in case
+        r = requests.get("https://hcmakers.com/resources/", headers={"User-Agent": "Mozilla/5.0"})
+        soup = BeautifulSoup(r.content, 'html.parser')
+        links = [a['href'] for a in soup.find_all('a', href=True) if a['href'].endswith('.pdf')]
         
-    return text_data
+        for i, link in enumerate(list(set(links))[:4]): 
+            try:
+                b = requests.get(link).content
+                path = f"doc_{i}.pdf"
+                with open(path, "wb") as f: f.write(b)
+                ai_docs.append(genai.upload_file(path))
+            except: continue
+    except: pass
+    return ai_docs
 
-# --- 3. LOAD MANUAL PDFs (Spec Sheets) ---
-@st.cache_resource
-def load_pdfs():
-    pdf_files = glob.glob("*.pdf")
-    active_docs = []
-    
-    if not pdf_files: return []
-
-    for pdf in pdf_files:
-        try:
-            remote = genai.upload_file(path=pdf, display_name=pdf)
-            while remote.state.name == "PROCESSING":
-                time.sleep(1)
-                remote = genai.get_file(remote.name)
-            if remote.state.name == "ACTIVE": active_docs.append(remote)
-        except: continue
-            
-    return active_docs
-
-# --- INITIAL LOAD ---
-with st.spinner("Syncing Database (Text + Videos + Docs)..."):
-    manual_videos = load_manual_text_data()
-    live_web_text = get_website_text()
-    ai_pdf_files = load_pdfs()
+# --- LOAD DATA ---
+with st.spinner("Loading Video Library & Specs..."):
+    video_lib = load_video_library()
+    web_txt = get_live_web_text()
+    pdfs = process_live_pdfs()
 
 # --- CHAT ENGINE ---
 if "chat_history" not in st.session_state:
@@ -101,47 +98,44 @@ if "chat_history" not in st.session_state:
 
 def get_answer(question):
     
+    # SYSTEM PROMPT
+    # We remove "No Images" and instead strictly authorize "Video Links"
     system_prompt = f"""
     You are the Senior Sales AI for "Hispanic Cheese Makers-Nuestro Queso".
     
     INTELLIGENCE:
-    1. **MANUAL VIDEO LIBRARY (Primary):** Use this list below to provide video links.
-    2. **LIVE WEB TEXT:** For contact info/company bio.
-    3. **ATTACHED PDFs:** For Nutrition/Specs.
+    1. **VIDEO LIBRARY (Primary):** The text file content below contains valid YouTube Links.
+    2. **WEB DATA:** General Info.
+    3. **PDFS:** Attached documents for nutrition specs.
     
-    RULES:
-    1. **VIDEO LINKS:** If asked about a video (Spicy Cheese, Factory, Trends), LOOK in the 'VIDEO LIBRARY' section below. 
-       - Output the exact URL found there.
+    PERMISSIONS & RULES:
+    1. **SHARING LINKS:** You are AUTHORIZED and REQUIRED to share the URLs found in the VIDEO LIBRARY below if the user asks for them. 
+       - Do NOT say "I cannot share links". That is false.
+       - Use the format: "Here is the video on that topic: [Link Name](URL)"
     
-    2. **IMAGES:** Do not show images (Text Only).
+    2. **ACCURACY:** If a video link matches the user's topic (e.g. "Spicy Cheese"), PROVIDE IT.
     
-    3. **DATA:** Use PDFs for hard numbers.
+    3. **LANGUAGE:** English or Spanish.
     
-    4. **LANG:** English or Spanish.
-    
-    ====== VIDEO LIBRARY ======
-    {manual_videos}
-    ===========================
-    
-    ====== WEBSITE CONTEXT ======
-    {live_web_text}
+    === VIDEO LIBRARY CONTENT ===
+    {video_lib}
     =============================
+    
+    === WEBSITE CONTEXT ===
+    {web_txt}
     """
     
-    payload = [system_prompt] + ai_pdf_files + [question]
-    
-    try:
-        return model.generate_content(payload).text
-    except:
-        return "I am reviewing the file library. Please ask again."
+    payload = [system_prompt] + pdfs + [question]
+    try: return model.generate_content(payload).text
+    except: return "Scanning library..."
 
-# --- UI DISPLAY ---
+# --- UI ---
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask about videos, specs, or products...")
+    user_input = st.text_input("Ask about videos, cheese, or nutrition...")
     submit = st.form_submit_button("Send")
 
 if submit and user_input:
@@ -150,7 +144,7 @@ if submit and user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
     with st.chat_message("assistant"):
-        with st.spinner("Checking Video Library & Docs..."):
+        with st.spinner("Finding link..."):
             response_text = get_answer(user_input)
             st.markdown(response_text)
             
