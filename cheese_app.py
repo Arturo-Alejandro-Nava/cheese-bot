@@ -7,7 +7,7 @@ import time
 import io
 import fitz  # PyMuPDF
 import re
-import glob # Helper to scan filenames
+import glob
 
 # --- CONFIGURATION ---
 try:
@@ -24,44 +24,46 @@ st.set_page_config(page_title="Hispanic Cheese Makers-Nuestro Queso", page_icon=
 # --- HEADER ---
 col1, col2 = st.columns([1, 4])
 with col1:
-    possible = ["logo.jpg", "logo.png", "logo.jpeg", "logo"]
-    found = False
+    possible = ["logo.jpg", "logo.png", "logo.jpeg"]
     for p in possible:
         if os.path.exists(p):
-            st.image(p, width=130); found = True; break
-    if not found: st.write("🧀")
+            st.image(p, width=130); break
+    else: st.write("🧀")
 
 with col2:
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 
 st.markdown("---")
 
-# --- 1. LOCAL IMAGE LOADER ---
+# --- 1. LOCAL IMAGE DISPLAY ---
 def show_local_image(filename):
     if os.path.exists(filename):
         st.image(filename, width=500)
     else:
-        # Retry with fuzzy matching logic if exact name isn't found
-        all_files = os.listdir('.')
-        for f in all_files:
-            if filename.lower() in f.lower() and f.endswith(('.png', '.jpg', '.jpeg')):
-                st.image(f, width=500)
-                return
+        # Fallback if specific file missing, check directory
+        st.warning(f"File not found: {filename}")
 
-# --- 2. ASSET DISCOVERY (The Magic Logic) ---
+# --- 2. ASSET MAPPING (THE LOGIC FIX) ---
+# We explicitly map the filenames you downloaded to their Real World meaning.
+# This prevents the AI from showing the office when you ask for the plant.
+FILE_MAP = """
+CRITICAL VISUAL ASSET DICTIONARY (Use ONLY these filenames):
+- IMAGE: AERIAL PLANT / FACTORY / BUILDING OUTSIDE -> Filename: '7777-1.jpg'
+- IMAGE: FACTORY INSIDE / PRODUCTION LINE -> Filename: 'PLANT_138.jpg'
+- IMAGE: CORPORATE OFFICE / HEADQUARTERS -> Filename: 'display.jpg'
+- IMAGE: LAB / QUALITY ASSURANCE -> Filename: 'Quality-Lab.jpg'
+- IMAGE: CHEESE FRIES PACKAGE -> Filename: 'CheeseFries-web.png'
+- IMAGE: OAXACA BITES PACKAGE -> Filename: 'OaxacaBites-web.png'
+- IMAGE: FRESCO CHEESE -> Filename: 'Fresco-Natural-10oz.png'
+- IMAGE: COTIJA CHEESE -> Filename: 'cotija-wedge-10oz-cp.png'
+- IMAGE: OAXACA CHEESE -> Filename: 'OAXACA-BALL-5lb-v3.png'
+"""
+
+# --- 3. LIVE KNOWLEDGE SCRAPER ---
 @st.cache_resource(ttl=3600)
-def inventory_assets():
-    # A. List all local images (The 59 files you uploaded)
-    image_files = glob.glob("*.jpg") + glob.glob("*.png") + glob.glob("*.jpeg") + glob.glob("*.webp")
-    # Clean list (remove logo)
-    image_files = [f for f in image_files if "logo" not in f]
-    
-    img_list_str = "AVAILABLE IMAGES:\n"
-    for img in image_files:
-        img_list_str += f"- {img}\n"
-
-    # B. Text Knowledge
-    urls = ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/contact-us/", "https://hcmakers.com/capabilities/", "https://hcmakers.com/quality/"]
+def get_knowledge_base():
+    # 1. Text Scraper
+    urls = ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/contact-us/", "https://hcmakers.com/capabilities/"]
     web_text = "WEBSITE DATA:\n"
     for u in urls:
         try:
@@ -70,7 +72,7 @@ def inventory_assets():
             web_text += s.get_text(" ", strip=True)[:3000] + "\n"
         except: pass
 
-    # C. PDF Downloader
+    # 2. PDF Downloader
     pdf_docs = []
     try:
         r = requests.get("https://hcmakers.com/resources/", headers={"User-Agent": "Mozilla/5.0"})
@@ -85,56 +87,44 @@ def inventory_assets():
                 pdf_docs.append(genai.upload_file(path))
             except: continue
         
-        # Wait for processing
-        active_pdfs = []
+        # Wait
+        ready = []
         for p in pdf_docs:
-            for _ in range(10):
-                if p.state.name == "ACTIVE": active_pdfs.append(p); break
-                time.sleep(1)
-                p = genai.get_file(p.name)
-    except: active_pdfs = []
+            while p.state.name == "PROCESSING": time.sleep(1); p = genai.get_file(p.name)
+            ready.append(p)
+    except: ready = []
 
-    return web_text, img_list_str, active_pdfs
+    return web_text, ready
 
-# --- INITIAL LOAD ---
-with st.spinner("Indexing 50+ Images & Syncing Data..."):
-    web_txt, img_inventory, pdf_files = inventory_assets()
+# --- LOAD ---
+with st.spinner("Calibrating Asset Library..."):
+    web_data, pdf_files = get_knowledge_base()
 
-# --- BRAIN ---
+# --- CHAT BRAIN ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 def get_answer(question):
-    # Verified contacts to prevent hallucinations
-    contacts = """
-    CONTACTS:
-    - VP Sales (Sandy Goldberg): 847-258-0375
-    - Marketing Dir (Arturo Nava): 847-502-0934
-    - Office: 224-366-4320
-    - Plant: 815-443-2100 (Kent, IL)
-    """
+    contact_info = "PHONE: 847-258-0375 (Sandy), 847-502-0934 (Arturo Nava). ADDRESS: 752 N. Kent Road, Kent IL."
     
     system_prompt = f"""
-    You are the Senior Product Specialist for "Hispanic Cheese Makers-Nuestro Queso".
+    You are the Senior Product Specialist for "Hispanic Cheese Makers".
     
-    ASSETS AVAILABLE:
-    {img_inventory}
+    VISUAL RULES (CRITICAL):
+    1. **MAPPING:** Use the 'VISUAL ASSET DICTIONARY' below.
+       - If asked for "Plant" or "Factory", you MUST use `7777-1.jpg`. (Do NOT use display.jpg, that is the office).
+       - If asked for "Office", use `display.jpg`.
+       - If asked for "Bites", use `OaxacaBites-web.png`.
+    2. **OUTPUT:** Reply with the exact tag: `<<<IMG: filename.jpg>>>`.
+    3. **DATA:** Use PDFs for nutrition.
+    4. **LANG:** English/Spanish.
     
-    RULES:
-    1. **IMAGES**: You have a list of 'AVAILABLE IMAGES' filenames.
-       - If user asks for "Plant", look for 'PLANT', 'Factory', or '7777' filenames.
-       - If user asks for "Fries", look for 'CheeseFries' or similar.
-       - If user asks for "Office", look for 'display.jpg' or 'building'.
-       - **OUTPUT:** `<<<IMG: exact_filename.jpg>>>`
+    {FILE_MAP}
     
-    2. **DATA**: Use PDFs for numbers/specs.
-    3. **LANGUAGE**: English or Spanish.
-    4. **ACCURACY**: Use the provided CONTACTS list for phone numbers.
-    
-    {contacts}
-    {web_txt}
+    WEBSITE CONTEXT:
+    {web_data}
+    {contact_info}
     """
-    
     payload = [system_prompt] + pdf_files + [question]
     try: return model.generate_content(payload).text
     except: return "Retrieving..."
@@ -142,8 +132,8 @@ def get_answer(question):
 # --- UI ---
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
-        if "img_file" in message:
-            show_local_image(message["img_file"])
+        if "img_path" in message:
+            show_local_image(message["img_path"])
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
@@ -156,7 +146,7 @@ if submit and user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
     with st.chat_message("assistant"):
-        with st.spinner("Searching Asset Library..."):
+        with st.spinner("Checking Files..."):
             raw = get_answer(user_input)
             
             match = re.search(r"<<<IMG: (.*?)>>>", raw)
@@ -170,5 +160,5 @@ if submit and user_input:
             st.markdown(clean)
             
             msg = {"role": "assistant", "content": clean}
-            if img_file: msg["img_file"] = img_file
+            if img_file: msg["img_path"] = img_file
             st.session_state.chat_history.append(msg)
