@@ -27,127 +27,139 @@ with col1:
     found = False
     for p in possible:
         if os.path.exists(p):
-            st.image(p, width=130); found=True; break
+            st.image(p, width=130); found = True; break
     if not found: st.write("🧀")
 with col2:
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 st.markdown("---")
 
-# --- 1. RENDERER (Force Browser to Load Image) ---
-def show_html_image(url):
-    st.markdown(
-        f"""
-        <div style="margin: 10px 0;">
-            <img src="{url}" style="width:100%; max-width:500px; border-radius:10px; border: 1px solid #ddd;">
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+# --- 1. PROXY IMAGE RENDERER (THE FIX) ---
+def render_image(url):
+    """
+    Downloads the image on the Python server to bypass Hotlink/CORS blocks.
+    Then displays the raw data.
+    """
+    if not url: return
 
-# --- 2. PRIORITY ASSET MAP (The "Anti-Error" Fix) ---
-# We force the AI to use these specific URLs for main products.
-# This prevents it from showing a "Gold Medal" instead of the Cheese.
-PRIORITY_IMAGES = {
-    "COTIJA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_cotija_wedge_10oz_cp.png",
-    "FRESCO": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Fresco_Natural_10oz.png",
-    "OAXACA BALL": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_OAXACA_BALL_5lb_v3.png",
+    # Headers make us look like a real Chrome user visiting their site
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Referer": "https://hcmakers.com/",
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+    }
+
+    try:
+        # Download the bytes
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            # Display bytes directly
+            st.image(io.BytesIO(r.content), width=500)
+        else:
+            # Last resort link
+            st.markdown(f"**Image:** [View Link]({url})")
+    except:
+        st.markdown(f"**Image:** [View Link]({url})")
+
+# --- 2. PRIORITY IMAGE LIST (Guaranteed correct images) ---
+PRIORITY_MAP = {
     "OAXACA BITES": "https://hcmakers.com/wp-content/uploads/2021/01/OaxacaBites-web.png",
-    "PANELA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Panela_Bar_8oz_v2.png",
     "CHEESE FRIES": "https://hcmakers.com/wp-content/uploads/2021/01/CheeseFries-web.png",
+    "FRESCO": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Fresco_Natural_10oz.png",
+    "COTIJA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_cotija_wedge_10oz_cp.png",
+    "PANELA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Panela_Bar_8oz_v2.png",
+    "OAXACA BALL": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_OAXACA_BALL_5lb_v3.png",
     "CREMA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Mexicana_Tub_16oz.png",
-    "QUESADILLA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Quesadilla-Shred_2lb.png",
-    "PLANT / FACTORY": "https://hcmakers.com/wp-content/uploads/2021/01/7777-1.jpg",
-    "FACTORY INSIDE": "https://hcmakers.com/wp-content/uploads/2021/01/PLANT_138.jpg",
+    "QUESADILLA SHRED": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Quesadilla-Shred_2lb.png",
+    "PLANT": "https://hcmakers.com/wp-content/uploads/2021/01/7777-1.jpg",
+    "FACTORY": "https://hcmakers.com/wp-content/uploads/2021/01/PLANT_138.jpg",
     "LAB": "https://hcmakers.com/wp-content/uploads/2020/12/Quality_Lab.jpg",
     "OFFICE": "https://hcmakers.com/wp-content/uploads/2020/08/display.jpg"
 }
 
-# --- 3. LIVE SCRAPER (Backup for everything else) ---
+# --- 3. SCRAPER & PDF LOADER ---
 @st.cache_resource(ttl=3600)
-def crawl_website():
+def load_data():
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # TEXT
-    urls = ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/capabilities/", "https://hcmakers.com/quality/", "https://hcmakers.com/contact-us/", "https://hcmakers.com/about-us/"]
+    # Scrape Text
     web_text = "WEBSITE DATA:\n"
-    scraped_images = "ADDITIONAL IMAGES (Backup):\n"
+    img_catalog = "ADDITIONAL IMAGES:\n"
+    urls = ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/contact-us/", "https://hcmakers.com/capabilities/"]
     
-    seen = []
-    
-    for url in urls:
+    for u in urls:
         try:
-            r = requests.get(url, headers=headers)
+            r = requests.get(u, headers=headers)
             soup = BeautifulSoup(r.content, 'html.parser')
-            web_text += f"\nPAGE: {url}\n{soup.get_text(' ', strip=True)[:4000]}\n"
+            web_text += f"\nPAGE: {u}\n{soup.get_text(' ', strip=True)[:4000]}\n"
             
+            # Scrape Extra Images
             for img in soup.find_all('img'):
-                src = img.get('data-src') or img.get('src')
-                if not src: continue
-                if src.startswith("/"): src = "https://hcmakers.com" + src
-                if any(x in src.lower() for x in ['logo', 'icon', 'svg', 'facebook', 'twitter']): continue
-                
-                if src not in seen:
-                    fname = src.split("/")[-1]
-                    scraped_images += f"FILE: {fname} | URL: {src}\n"
-                    seen.append(src)
-        except: continue
+                src = img.get('src')
+                if src and "uploads" in src and "logo" not in src:
+                    if src.startswith("/"): src = "https://hcmakers.com" + src
+                    name = src.split("/")[-1]
+                    img_catalog += f"FILE: {name} | URL: {src}\n"
+        except: pass
 
-    # DOCUMENTS (Live Zip/PDF Extraction)
-    live_docs = []
+    # Download PDFs
+    docs = []
     try:
         r = requests.get("https://hcmakers.com/resources/", headers=headers)
         soup = BeautifulSoup(r.content, 'html.parser')
-        zip_url = next((a['href'] for a in soup.find_all('a', href=True) if a['href'].endswith('.zip')), None)
-        if zip_url:
-            z_data = requests.get(zip_url, headers=headers).content
+        
+        # Check ZIP
+        zip_link = next((a['href'] for a in soup.find_all('a', href=True) if a['href'].endswith('.zip')), None)
+        
+        if zip_link:
+            z_data = requests.get(zip_link, headers=headers).content
             with zipfile.ZipFile(io.BytesIO(z_data)) as z:
                 i = 0
                 for fn in z.namelist():
                     if fn.lower().endswith(".pdf") and i < 6:
-                        with open(f"t_{i}.pdf", "wb") as f: f.write(z.read(fn))
-                        live_docs.append(genai.upload_file(f"t_{i}.pdf", display_name=fn))
+                        with open(f"temp_{i}.pdf", "wb") as f: f.write(z.read(fn))
+                        docs.append(genai.upload_file(f"temp_{i}.pdf", display_name=fn))
                         i+=1
     except: pass
 
-    return web_text, scraped_images, live_docs
+    return web_text, img_catalog, docs
 
 # --- LOAD ---
-with st.spinner("Connecting to Live Data Stream..."):
-    web_txt, scrap_img, ai_pdfs = crawl_website()
+with st.spinner("Connecting..."):
+    text_data, scrap_img, pdf_assets = load_data()
 
 # --- BRAIN ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 def get_answer(question):
-    # Construct Priority List for Prompt
-    priority_list = "PRIORITY IMAGES (ALWAYS CHECK HERE FIRST):\n"
-    for k, v in PRIORITY_IMAGES.items():
-        priority_list += f"- {k}: {v}\n"
-    
+    # We prioritize the hardcoded list first
+    priority_list = "\n".join([f"- KEY: {k} | URL: {v}" for k, v in PRIORITY_MAP.items()])
+
     system_prompt = f"""
     You are the Sales AI for Nuestro Queso.
     
-    IMAGE RULES:
-    1. **PRIORITY CHECK:** If user asks for Cotija, Fresco, Plant, or anything in the 'PRIORITY IMAGES' list, you **MUST** use that exact URL. Do not look anywhere else.
-       - *Example:* "Here is the Cotija: <<<IMG: {PRIORITY_IMAGES['COTIJA']}>>>"
-       
-    2. **BACKUP SEARCH:** Only look at the 'ADDITIONAL IMAGES' list if the item is NOT in the priority list.
-       - Do **NOT** use images of medals, awards, or icons when the user asks for a Product.
-    
-    3. **OUTPUT FORMAT:** `<<<IMG: URL_HERE>>>`
-    
-    DATA RULES:
-    - Use the attached PDFs for Nutrition Facts (Protein/Fat/Size).
-    
+    ASSETS:
     {priority_list}
+    
     {scrap_img}
     
+    RULES:
+    1. **IMAGES:** 
+       - Check 'ASSETS' list. Match user request (e.g. "Bites") to the KEY or FILE.
+       - OUTPUT: `<<<IMG: URL_HERE>>>`
+    
+    2. **PLANT vs OFFICE:** 
+       - "Office" = 'display.jpg'
+       - "Plant/Factory" = '7777-1.jpg' or 'PLANT_138.jpg'
+       
+    3. **DATA:** Use PDFs.
+    4. **LANG:** English/Spanish.
+    
     WEBSITE CONTEXT:
-    {web_txt}
+    {text_data}
     """
     
-    payload = [system_prompt] + ai_pdfs + [question]
+    payload = [system_prompt] + pdf_assets + [question]
     try: return model.generate_content(payload).text
     except: return "Scanning..."
 
@@ -155,8 +167,8 @@ def get_answer(question):
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        if "img_url" in message:
-            show_html_image(message["img_url"])
+        if "img_src" in message:
+            render_image(message["img_src"])
 
 with st.form(key="chat_form"):
     user_input = st.text_input("Ask question...")
@@ -172,15 +184,15 @@ if submit and user_input:
             raw = get_answer(user_input)
             
             clean = re.sub(r"<<<IMG: .*?>>>", "", raw).strip()
-            img_match = re.search(r"<<<IMG: (.*?)>>>", raw)
             
             st.markdown(clean)
             
-            found_url = None
-            if img_match:
-                found_url = img_match.group(1).strip()
-                show_html_image(found_url)
-                
+            url = None
+            match = re.search(r"<<<IMG: (.*?)>>>", raw)
+            if match:
+                url = match.group(1).strip()
+                render_image(url) # Render on server side
+
             msg = {"role": "assistant", "content": clean}
-            if found_url: msg["img_url"] = found_url
+            if url: msg["img_src"] = url
             st.session_state.chat_history.append(msg)
