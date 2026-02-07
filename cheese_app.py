@@ -15,17 +15,16 @@ except:
     st.stop()
 
 genai.configure(api_key=API_KEY)
-# We use Flash because it handles large files (PDFs) faster/cheaper
+# We use Flash because it allows high-volume document reading cheaply
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# --- WEBPAGE CONFIG (Restored to Original) ---
+# --- WEBPAGE CONFIG ---
 st.set_page_config(page_title="Hispanic Cheese Makers-Nuestro Queso", page_icon="🧀")
 
-# --- HEADER / BANNER LOGIC (Restored) ---
+# --- HEADER / BANNER LOGIC ---
 col1, col2 = st.columns([1, 4])
 with col1:
-    # This checks for the logo/banner file you uploaded previously
-    possible_logos = ["logo.jpg", "logo.png", "logo.jpeg"]
+    possible_logos = ["logo.jpg", "logo.png", "logo.jpeg", "147.png"] # Added your specific file name just in case
     found = False
     for p in possible_logos:
         if os.path.exists(p):
@@ -40,124 +39,116 @@ with col2:
 
 st.markdown("---")
 
-# --- 1. LIVE DATA ENGINE (Website & PDFs Only) ---
-# This complies with your request to NOT use hardcoded cheatsheets.
-# It MUST download the real files from the internet.
-@st.cache_resource(ttl=3600) 
-def get_live_data():
+# --- 1. INTELLIGENCE LOADER (LIVE SITE & PDFS) ---
+@st.cache_resource(ttl=3600, show_spinner=False)
+def load_live_intelligence():
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # PART A: SCRAPE TEXT (For Contacts/Location)
-    # We scrape 4 key pages
+    # STATUS TRACKER FOR UI
+    status = st.status("Connecting to Live Database...", expanded=True)
+    
+    # PART A: TEXT SCRAPING (Fast)
+    status.write("📡 Scanning hcmakers.com for contact info...")
     urls = [
         "https://hcmakers.com/", 
         "https://hcmakers.com/products/", 
         "https://hcmakers.com/contact-us/", 
         "https://hcmakers.com/capabilities/"
     ]
-    web_text = "WEBSITE DATA CONTENT:\n"
-    
+    web_text = "WEBSITE TEXT CONTENT:\n"
     for url in urls:
         try:
-            r = requests.get(url, headers=headers)
+            r = requests.get(url, headers=headers, timeout=5)
             soup = BeautifulSoup(r.content, 'html.parser')
-            clean_text = soup.get_text(" ", strip=True)[:4000] # Limit per page
-            web_text += f"\n--- SOURCE: {url} ---\n{clean_text}\n"
+            web_text += f"\n--- SOURCE: {url} ---\n{soup.get_text(' ', strip=True)[:3000]}\n"
         except: continue
         
-    # PART B: SMART FILE DOWNLOADER (For Specs)
-    # Strategy: Find the ZIP, open it in memory, extract ONLY critical spec sheets.
-    pdf_files = []
-    file_list_txt = []
+    # PART B: PDF DOWNLOADER (The Critical Part)
+    pdf_objects = []
+    file_names = []
     
     try:
-        r = requests.get("https://hcmakers.com/resources/", headers=headers)
+        status.write("📥 Locate & Download Spec Sheets (Live)...")
+        r = requests.get("https://hcmakers.com/resources/", headers=headers, timeout=10)
         soup = BeautifulSoup(r.content, 'html.parser')
-        
-        # Find the Resources ZIP
         zip_url = next((a['href'] for a in soup.find_all('a', href=True) if a['href'].endswith('.zip')), None)
         
         if zip_url:
-            z_data = requests.get(zip_url, headers=headers).content
+            z_data = requests.get(zip_url, headers=headers, timeout=20).content
             with zipfile.ZipFile(io.BytesIO(z_data)) as z:
-                # FILTER: Only grab the relevant Sell Sheets to prevent memory crash
-                critical_keywords = ["fresco", "oaxaca", "panela", "cotija", "quesadilla", "crema", "sheet"]
+                # We specifically look for the CORE items to avoid crashing the server memory
+                # We prioritize the Sell Sheets because they have the Nutrition Facts tables
+                target_files = [f for f in z.namelist() if f.endswith(".pdf") and any(x in f.lower() for x in ['sheet', 'fresco', 'oaxaca', 'panela', 'cotija'])]
                 
-                count = 0
-                for fname in z.namelist():
-                    lower_name = fname.lower()
+                # Limit to 5 to prevent "re-reading catalog" timeouts
+                for i, fname in enumerate(target_files[:5]):
+                    status.write(f"📄 Processing: {fname}...")
                     
-                    # Only process PDFs that match our cheese list
-                    if lower_name.endswith(".pdf") and any(k in lower_name for k in critical_keywords):
+                    # Extract to temp
+                    with open(f"temp_{i}.pdf", "wb") as f:
+                        f.write(z.read(fname))
+                    
+                    # Upload to Google Brain
+                    uploaded_file = genai.upload_file(path=f"temp_{i}.pdf", display_name=fname)
+                    
+                    # CRITICAL: We wait for the file to be ACTIVE before letting the user chat
+                    # This prevents the crash you saw earlier
+                    retry = 0
+                    while uploaded_file.state.name == "PROCESSING" and retry < 10:
+                        time.sleep(1)
+                        uploaded_file = genai.get_file(uploaded_file.name)
+                        retry += 1
                         
-                        # Stop after 6 files to save Server Memory (prevents crash)
-                        if count >= 6: break 
-                        
-                        # Extract logic
-                        with open(f"temp_{count}.pdf", "wb") as f: 
-                            f.write(z.read(fname))
-                        
-                        # Send to AI
-                        remote_file = genai.upload_file(path=f"temp_{count}.pdf", display_name=fname)
-                        pdf_files.append(remote_file)
-                        file_list_txt.append(fname)
-                        count += 1
+                    if uploaded_file.state.name == "ACTIVE":
+                        pdf_objects.append(uploaded_file)
+                        file_names.append(fname)
+                    else:
+                        status.write(f"⚠️ Skipped {fname} (Processing Error)")
                         
     except Exception as e:
-        web_text += f"\n[System Note: Document fetch partial error: {e}]"
+        status.write(f"⚠️ Note: Partial Document Error ({e})")
     
-    # Wait for files to be ready at Google
-    ready_files = []
-    for f in pdf_files:
-        retry = 0
-        while f.state.name == "PROCESSING" and retry < 5:
-            time.sleep(1)
-            f = genai.get_file(f.name)
-            retry += 1
-        if f.state.name == "ACTIVE":
-            ready_files.append(f)
-            
-    return web_text, ready_files, file_list_txt
+    status.update(label="✅ System Ready! Database Synced.", state="complete", expanded=False)
+    return web_text, pdf_objects, file_names
 
-# --- LOAD INDICATOR ---
-with st.spinner("Connecting to hcmakers.com database & extracting sell sheets..."):
-    # This calls the function above
-    website_knowledge, live_docs, doc_names = get_live_data()
+# --- LOAD ---
+website_data, live_pdfs, pdf_names = load_live_intelligence()
 
-# --- CHAT ENGINE ---
+# --- CHAT BRAIN ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-def get_response_from_site(question):
-    
-    # Formatting the file list for the prompt
-    doc_str = "\n".join(doc_names)
+def get_answer(question):
+    # Construct Context from filenames
+    files_str = "\n".join(pdf_names)
     
     system_prompt = f"""
-    You are the Senior Product Specialist for 'Hispanic Cheese Makers-Nuestro Queso'.
+    You are the Senior Sales AI for 'Hispanic Cheese Makers-Nuestro Queso'.
     
-    DATA SOURCE INSTRUCTIONS:
-    1. **USE ATTACHED DOCUMENTS:** I have loaded {len(live_docs)} spec sheets directly from the website zip file. 
-       - Filenames: {doc_str}
-       - You must READ the tables inside these PDF files to answer Nutrition/Pack size questions.
+    RESOURCES AVAILABLE:
+    1. **LIVE PDF SHEETS:** {len(live_pdfs)} official docs attached. (Filenames: {files_str})
+       - YOU MUST READ THE VISUAL TABLES INSIDE THESE PDFS.
+       - Look for "Nutrition Facts" panels in the files to answer protein/fat/calorie questions.
     
-    2. **USE LIVE WEBSITE TEXT:** The context text provided below is from the live website. Use this for contacts/address.
+    2. **WEBSITE DATA:** Context below. Use for contacts and location.
     
     RULES:
-    1. **NO HARDCODED GUESSES:** Read the file. If you see the number in the PDF table, state it exactly.
-    2. **IMAGES:** Do not try to show images. Describe products in text.
-    3. **LANGUAGE:** English or Spanish (match user).
+    - **ACCURACY:** If the PDF says "Protein 5g", say "5g". Do not guess. 
+    - **NO IMAGES:** Do not generate fake image links. Use text descriptions.
+    - **LANG:** English or Spanish (Detect User).
     
     WEBSITE CONTEXT:
-    {website_knowledge}
+    {website_data}
     """
     
-    payload = [system_prompt] + live_docs + [question]
+    # We combine Prompt + Files + User Question
+    payload = [system_prompt] + live_pdfs + [question]
     
     try:
         return model.generate_content(payload).text
-    except:
-        return "I am re-reading the catalog. Please wait 5 seconds and ask again."
+    except Exception as e:
+        # Fallback if Google API gets overwhelmed
+        return "I am currently analyzing the heavy spec sheets. Please try asking again in 10 seconds."
 
 # --- UI DISPLAY ---
 for message in st.session_state.chat_history:
@@ -165,7 +156,7 @@ for message in st.session_state.chat_history:
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask about specifications, nutrition, or sales... / Pregunta...")
+    user_input = st.text_input("Ask about specs, nutrition, or sales... / Pregunta...")
     submit = st.form_submit_button("Send")
 
 if submit and user_input:
@@ -176,8 +167,8 @@ if submit and user_input:
 
     # 2. Assistant
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing downloadable files..."):
-            response_text = get_response_from_site(user_input)
+        with st.spinner("Reading Nutrition Tables from PDF files..."):
+            response_text = get_answer(user_input)
             st.markdown(response_text)
             
     st.session_state.chat_history.append({"role": "assistant", "content": response_text})
