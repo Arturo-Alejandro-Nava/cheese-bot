@@ -4,6 +4,8 @@ import requests
 from bs4 import BeautifulSoup
 import os
 import time
+import io
+import zipfile
 
 # --- CONFIGURATION ---
 try:
@@ -36,10 +38,9 @@ with col2:
 
 st.markdown("---")
 
-# --- 1. LIVE TEXT SCRAPER (The Knowledge) ---
+# --- 1. LIVE TEXT SCRAPER ---
 @st.cache_resource(ttl=3600) 
 def get_website_text():
-    # We scrape the critical pages for latest info
     urls = [
         "https://hcmakers.com/", 
         "https://hcmakers.com/products/", 
@@ -49,7 +50,6 @@ def get_website_text():
         "https://hcmakers.com/about-us/",
         "https://hcmakers.com/category-knowledge/"
     ]
-    
     combined_text = "LIVE WEBSITE TEXT CONTENT:\n"
     headers = {"User-Agent": "Mozilla/5.0"}
     
@@ -57,15 +57,12 @@ def get_website_text():
         try:
             resp = requests.get(url, headers=headers)
             soup = BeautifulSoup(resp.content, 'html.parser')
-            # Extract Clean Text
             text = soup.get_text(separator=' ', strip=True)
             combined_text += f"\n--- SOURCE: {url} ---\n{text[:6000]}\n"
-        except:
-            continue
-            
+        except: continue  
     return combined_text
 
-# --- 2. LIVE PDF DOWNLOADER (The Data) ---
+# --- 2. LIVE PDF DOWNLOADER (Scrapes Zips & PDFs) ---
 @st.cache_resource(ttl=3600)
 def process_live_pdfs():
     target_url = "https://hcmakers.com/resources/"
@@ -77,7 +74,7 @@ def process_live_pdfs():
         soup = BeautifulSoup(r.content, 'html.parser')
         links = soup.find_all('a', href=True)
         count = 0
-        limit = 6 # Scan top 6 docs
+        limit = 6 
         
         for link in links:
             if count >= limit: break
@@ -86,38 +83,43 @@ def process_live_pdfs():
             pdf_bytes = None
             fname = "Doc"
             
-            # Simple PDF Finder (Skips Zips to avoid errors)
+            # Direct PDF
             if href.endswith('.pdf'):
                 try: 
                     pdf_bytes = requests.get(href, headers=headers).content
                     fname = href.split('/')[-1]
                 except: continue
+            # Unzip Strategy
+            elif href.endswith('.zip'):
+                try:
+                    z_data = requests.get(href, headers=headers).content
+                    with zipfile.ZipFile(io.BytesIO(z_data)) as z:
+                        for f in z.namelist():
+                            if f.endswith('.pdf'):
+                                pdf_bytes = z.read(f)
+                                fname = f
+                                break
+                except: continue
 
             if pdf_bytes:
                 local_path = f"doc_{count}.pdf"
                 with open(local_path, "wb") as f: f.write(pdf_bytes)
-                
-                # Upload to AI for analysis
                 remote = genai.upload_file(path=local_path, display_name=fname)
                 ai_files.append(remote)
                 count += 1
         
-        # Wait for Google to process files
         ready_files = []
         for f in ai_files:
             attempts = 0
             while f.state.name == "PROCESSING" and attempts < 10:
-                time.sleep(1)
-                f = genai.get_file(f.name)
-                attempts += 1
+                time.sleep(1); f = genai.get_file(f.name); attempts += 1
             if f.state.name == "ACTIVE": ready_files.append(f)
             
         return ready_files
-
     except: return []
 
 # --- INITIAL LOAD ---
-with st.spinner("Syncing Live Website Data & PDF Specs..."):
+with st.spinner("Accessing Database & Sell Sheets..."):
     web_text = get_website_text()
     knowledge_docs = process_live_pdfs()
 
@@ -131,28 +133,30 @@ def get_answer(question):
     You are the Senior Product Specialist for "Hispanic Cheese Makers-Nuestro Queso".
     
     KNOWLEDGE BASE:
-    1. **LIVE PDFS (Attached):** Read these visual documents for specific Nutrition numbers, Ingredients, Pack Sizes, and Pallet Configs.
-    2. **WEBSITE TEXT (Below):** Use this for contact info, factory location, and about us.
+    1. **VISUAL SELL SHEETS (Attached PDF files):** These contain the Nutrition Facts Tables.
+    2. **WEBSITE TEXT (Below):** For contact info and factory details.
     
-    RULES:
-    1. **NO IMAGES:** Provide text-only responses. Be descriptive.
-    2. **ACCURACY:** Do not hallucinate numbers. Read the PDF tables exactly.
-    3. **LINKS:** If the user asks about a topic, provide the specific URL from the website context (e.g. `https://hcmakers.com/quality`).
-    4. **CONTACTS:** Use the scraped contact info for emails/phones.
-    5. **LANGUAGE:** English or Spanish (Detect User Language).
-    6. **SCOPE:** Only answer questions about Nuestro Queso.
+    CRITICAL BEHAVIOR RULES:
+    1. **ANSWER IMMEDIATELY:** If asked about Protein, Fat, or Calories, look at ANY of the attached PDF tables.
+       - **DO NOT** ask the user which "Pack Size" (e.g. 5lb vs 10oz).
+       - Nutrition facts per serving (1oz) are usually the same across all packs.
+       - JUST READ THE NUMBER from the first Fresco document you find.
+       
+    2. **NO "I DON'T KNOW":** You have the files attached. Search them. The info IS there.
+       
+    3. **LINKS:** Provide direct URLs to website sections if relevant.
+    4. **LANGUAGE:** English or Spanish (Detect User Language).
+    5. **SCOPE:** Only answer questions about Our Products.
     
     LIVE WEBSITE CONTEXT:
     {web_text}
     """
     
-    # Send User Q + Live PDFs + Prompt
     payload = [system_prompt] + knowledge_docs + [question]
-    
     try:
         return model.generate_content(payload).text
     except Exception as e:
-        return "I am updating the database. Please ask again in 10 seconds."
+        return "I am re-reading the Sell Sheets. Please ask again in 5 seconds."
 
 # --- UI DISPLAY ---
 for message in st.session_state.chat_history:
@@ -160,7 +164,7 @@ for message in st.session_state.chat_history:
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask about cheese specs, nutrition, or sales... / Pregunta...")
+    user_input = st.text_input("Ask about specifications, nutrition, or sales... / Pregunta...")
     submit = st.form_submit_button("Send")
 
 if submit and user_input:
@@ -171,7 +175,7 @@ if submit and user_input:
 
     # AI Msg
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing data..."):
+        with st.spinner("Analizando..."):
             response_text = get_answer(user_input)
             st.markdown(response_text)
             
