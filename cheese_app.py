@@ -33,52 +33,41 @@ with col2:
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 st.markdown("---")
 
-# --- 1. THE BULLETPROOF IMAGE RENDERER (Dual Mode) ---
+# --- 1. THE BROWSER-BASED IMAGE RENDERER (The Fix) ---
 def render_image(url):
     """
-    Tries Server-Side download first. If blocked, uses Client-Side HTML injection.
-    This guarantees an image appears.
+    Forces the USER'S browser to load the image via HTML.
+    This bypasses the 403 Server Blocks because the request comes from a human, not the bot.
     """
     if not url: return
 
-    # METHOD A: Python Server Download (Proxy)
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36",
-            "Referer": "https://hcmakers.com/"
-        }
-        r = requests.get(url, headers=headers, timeout=4)
-        if r.status_code == 200:
-            st.image(io.BytesIO(r.content), width=500)
-            return
-    except: pass
-    
-    # METHOD B: HTML Injection (The User's Browser loads it)
-    # If Python fails/is blocked, this bypasses the server completely.
+    # Standard HTML <img> tag with styling
+    # This keeps the image request client-side
     st.markdown(
         f"""
-        <div style="background-color: #f0f0f0; padding: 10px; border-radius: 10px; display: inline-block;">
-            <img src="{url}" width="500" style="border-radius: 8px;">
+        <div style="text-align: center; margin: 10px 0;">
+            <img src="{url}" alt="Product Image" style="max-width: 500px; width: 100%; border-radius: 8px; border: 1px solid #e0e0e0; box-shadow: 0px 4px 6px rgba(0,0,0,0.1);">
         </div>
         """,
         unsafe_allow_html=True
     )
 
 # --- 2. PRIORITY IMAGES (Guaranteed Links) ---
-# Verified working URLs from your website data
+# Verified URLs that work in browsers
 PRIORITY_MAP = {
     "OAXACA BITES": "https://hcmakers.com/wp-content/uploads/2021/01/OaxacaBites-web.png",
     "CHEESE FRIES": "https://hcmakers.com/wp-content/uploads/2021/01/CheeseFries-web.png",
     "FRESCO": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Fresco_Natural_10oz.png",
     "COTIJA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_cotija_wedge_10oz_cp.png",
     "PANELA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Panela_Bar_8oz_v2.png",
-    "OAXACA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_OAXACA_BALL_5lb_v3.png",
+    "OAXACA BALL": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_OAXACA_BALL_5lb_v3.png",
     "CREMA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Mexicana_Tub_16oz.png",
-    "QUESADILLA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Quesadilla-Shred_2lb.png",
+    "QUESADILLA SHRED": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Quesadilla-Shred_2lb.png",
     "PLANT": "https://hcmakers.com/wp-content/uploads/2021/01/7777-1.jpg",
     "FACTORY": "https://hcmakers.com/wp-content/uploads/2021/01/PLANT_138.jpg",
-    "OFFICE": "https://hcmakers.com/wp-content/uploads/2020/08/display.jpg",
-    "LAB": "https://hcmakers.com/wp-content/uploads/2020/12/Quality_Lab.jpg"
+    "LAB": "https://hcmakers.com/wp-content/uploads/2020/12/Quality_Lab.jpg",
+    # Using generic display image for Office to ensure something loads
+    "OFFICE": "https://hcmakers.com/wp-content/uploads/2020/08/display.jpg"
 }
 
 # --- 3. LIVE KNOWLEDGE BASE ---
@@ -88,21 +77,22 @@ def get_data():
     
     # 1. Text Scraper
     web_text = "WEBSITE DATA:\n"
-    for url in ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/capabilities/"]:
+    img_catalog = "ADDITIONAL IMAGES:\n"
+    urls = ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/contact-us/", "https://hcmakers.com/capabilities/"]
+    
+    for u in urls:
         try:
-            r = requests.get(url, headers=headers)
+            r = requests.get(u, headers=headers)
             soup = BeautifulSoup(r.content, 'html.parser')
-            web_text += f"\nPAGE: {url}\n{soup.get_text(' ', strip=True)[:4000]}\n"
+            web_text += f"\nPAGE: {u}\n{soup.get_text(' ', strip=True)[:4000]}\n"
             
-            # Auto-find other product images not in Priority List
+            # Auto-find other product images
             for img in soup.find_all('img'):
                 src = img.get('src')
                 if src and "uploads" in src and "logo" not in src:
                     if src.startswith("/"): src = "https://hcmakers.com" + src
-                    # Check filename for key terms
-                    name = src.split("/")[-1].lower()
-                    if "pack" in name or "web" in name or "72" in name: # "web" usually implies product
-                        web_text += f"FOUND IMAGE: {name} | URL: {src}\n"
+                    name = src.split("/")[-1]
+                    img_catalog += f"FILE: {name} | URL: {src}\n"
         except: pass
 
     # 2. PDF Fetcher
@@ -110,7 +100,7 @@ def get_data():
     try:
         r = requests.get("https://hcmakers.com/resources/", headers=headers)
         links = [a['href'] for a in BeautifulSoup(r.content, 'html.parser').find_all('a', href=True) if a['href'].endswith('.pdf')]
-        for i, link in enumerate(list(set(links))[:4]): # limit to 4 to prevent timeout
+        for i, link in enumerate(list(set(links))[:4]): 
             try:
                 pdf_data = requests.get(link).content
                 path = f"d_{i}.pdf"
@@ -119,32 +109,34 @@ def get_data():
             except: continue
     except: pass
     
-    return web_text, pdf_docs
+    return web_text, img_catalog, pdf_docs
 
-with st.spinner("Connecting..."):
-    txt_data, ai_files = get_data()
+with st.spinner("Connecting to Live Data..."):
+    txt_data, extra_imgs, ai_files = get_data()
 
 # --- CHAT ENGINE ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 def get_response(question):
-    # Construct Image Key List for AI
-    img_keys = "\n".join([f"- {k}: {v}" for k, v in PRIORITY_MAP.items()])
+    img_keys = "\n".join([f"- KEY: {k} | URL: {v}" for k, v in PRIORITY_MAP.items()])
     
     system_prompt = f"""
     You are the Sales AI for Nuestro Queso.
     
-    ASSETS:
+    ASSETS (Prioritized):
     {img_keys}
     
+    ADDITIONAL ASSETS:
+    {extra_imgs}
+    
     RULES:
-    1. **NO PYTHON/CODE:** Do not write code blocks. Do not write `print()`. Just speak naturally.
+    1. **NO PYTHON/CODE:** Do not write code blocks. Just natural text.
     2. **IMAGES:** 
-       - To show an image, use this tag ONLY: `<<<IMG: URL_HERE>>>`.
-       - Check the 'ASSETS' list above.
-       - If asked for "Cotija", use the COTIJA URL. 
-       - If asked for "Office", use the OFFICE URL.
+       - Look for the KEY (e.g. 'OAXACA BITES') or matching URL in Additional Assets.
+       - OUTPUT: `<<<IMG: URL_HERE>>>`.
+       - Always verify the item matches the request (don't show awards for cheese).
+       
     3. **DATA:** Use PDFs for specs.
     4. **LANG:** English or Spanish.
     
@@ -160,11 +152,12 @@ def get_response(question):
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        if "image_url" in message:
-            render_image(message["image_url"])
+        # If there's an image attached to the message state, show it via HTML
+        if "img_url" in message:
+            render_image(message["img_url"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask question...")
+    user_input = st.text_input("Ask about our products... / Pregunta sobre nuestros productos...")
     submit = st.form_submit_button("Send")
 
 if submit and user_input:
@@ -176,19 +169,19 @@ if submit and user_input:
         with st.spinner("Thinking..."):
             raw = get_response(user_input)
             
-            # Clean Logic to remove Tags or Code hallucinations
-            clean = raw.replace("```python", "").replace("```", "").replace("print(", "").replace(")", "")
+            clean = re.sub(r"<<<IMG: .*?>>>", "", raw).strip()
+            # Clean possible markdown clutter
+            clean = clean.replace("```python", "").replace("```", "").replace("print(", "").replace(")", "")
             
-            img_match = re.search(r"<<<IMG: (.*?)>>>", clean)
-            final_text = re.sub(r"<<<IMG: .*?>>>", "", clean).strip()
+            st.markdown(clean)
             
-            st.markdown(final_text)
-            
-            found_url = None
-            if img_match:
-                found_url = img_match.group(1).strip()
-                render_image(found_url)
-                
-            msg = {"role": "assistant", "content": final_text}
-            if found_url: msg["image_url"] = found_url
+            # Logic: If URL found, display using HTML
+            url = None
+            match = re.search(r"<<<IMG: (.*?)>>>", raw)
+            if match:
+                url = match.group(1).strip()
+                render_image(url)
+
+            msg = {"role": "assistant", "content": clean}
+            if url: msg["img_url"] = url
             st.session_state.chat_history.append(msg)
