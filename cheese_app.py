@@ -4,8 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import os
 import time
-import zipfile
-import io
+import glob
 
 # --- CONFIGURATION ---
 try:
@@ -18,128 +17,145 @@ genai.configure(api_key=API_KEY)
 model = genai.GenerativeModel('gemini-2.0-flash')
 
 # --- WEBPAGE CONFIG ---
-st.set_page_config(page_title="Hispanic Cheese Makers-Nuestro Queso", page_icon="🧀")
+st.set_page_config(
+    page_title="Hispanic Cheese Makers-Nuestro Queso",
+    page_icon="🧀"
+)
 
-# --- HEADER ---
+# --- HEADER (Branding) ---
 col1, col2 = st.columns([1, 4])
 with col1:
-    possible = ["logo.jpg", "logo.png", "logo.jpeg"]
+    possible_names = ["logo.jpg", "logo.png", "logo.jpeg", "logo"]
     found = False
-    for p in possible:
+    for p in possible_names:
         if os.path.exists(p):
-            st.image(p, width=130); found=True; break
+            st.image(p, width=130); found = True; break
     if not found: st.write("🧀")
+
 with col2:
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 st.markdown("---")
 
-# --- 1. LIVE DATA ENGINE ---
+# --- 1. LIVE WEBSITE SCRAPER (Auto-Updates) ---
+# This goes to the internet every hour to get the latest Text/Contacts
 @st.cache_resource(ttl=3600) 
-def get_live_intelligence():
+def get_live_website_text():
+    urls = [
+        "https://hcmakers.com/", 
+        "https://hcmakers.com/products/", 
+        "https://hcmakers.com/capabilities/", # Factory Info
+        "https://hcmakers.com/quality/", 
+        "https://hcmakers.com/contact-us/",   # Latest Phone #s
+        "https://hcmakers.com/about-us/",
+        "https://hcmakers.com/category-knowledge/"
+    ]
+    
+    combined_text = "--- LIVE WEBSITE CONTENT (Most Current Info) ---\n"
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # Text Scraper
-    urls = ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/contact-us/", "https://hcmakers.com/about-us/"]
-    web_text = "WEBSITE DATA:\n"
     for url in urls:
         try:
-            r = requests.get(url, headers=headers, timeout=5)
+            r = requests.get(url, headers=headers)
             soup = BeautifulSoup(r.content, 'html.parser')
-            web_text += f"\n--- SOURCE: {url} ---\n{soup.get_text(' ', strip=True)[:4000]}\n"
-        except: continue
+            # Get text and clean it
+            text = soup.get_text(" ", strip=True)[:4000]
+            combined_text += f"\nPAGE: {url}\nTEXT: {text}\n"
+        except:
+            continue
+            
+    return combined_text
 
-    # PDF Auto-Download
-    pdf_files = []
-    try:
-        r = requests.get("https://hcmakers.com/resources/", headers=headers)
-        soup = BeautifulSoup(r.content, 'html.parser')
-        zip_link = next((a['href'] for a in soup.find_all('a', href=True) if a['href'].endswith('.zip')), None)
-        
-        if zip_link:
-            z_data = requests.get(zip_link, headers=headers).content
-            with zipfile.ZipFile(io.BytesIO(z_data)) as z:
-                count = 0
-                for fname in z.namelist():
-                    if fname.lower().endswith(".pdf") and count < 8:
-                        with open(f"temp_{count}.pdf", "wb") as f: f.write(z.read(fname))
-                        pdf_files.append(genai.upload_file(f"temp_{count}.pdf", display_name=fname))
-                        count += 1
-    except: pass
+# --- 2. LOCAL MANUAL PDF LOADER (Deep Spec Logic) ---
+# This looks for PDFs you manually uploaded to GitHub
+@st.cache_resource
+def load_manual_pdfs():
+    # Find all .pdf files in the folder
+    pdf_files = glob.glob("*.pdf")
+    active_knowledge_docs = []
+    filenames = []
+
+    if not pdf_files:
+        return [], "No PDF documents found. Please upload Sell Sheets to GitHub."
+
+    for pdf in pdf_files:
+        try:
+            # Upload to Gemini Brain
+            remote_file = genai.upload_file(path=pdf, display_name=pdf)
+            
+            # Wait for Google to process the visual tables
+            while remote_file.state.name == "PROCESSING":
+                time.sleep(1)
+                remote_file = genai.get_file(remote_file.name)
+            
+            if remote_file.state.name == "ACTIVE":
+                active_knowledge_docs.append(remote_file)
+                filenames.append(pdf)
+        except:
+            continue
+            
+    return active_knowledge_docs, ", ".join(filenames)
+
+# --- INITIAL LOAD ---
+with st.spinner("Syncing Live Website Text & Loading Manual Documents..."):
+    # 1. Scrape the Web (Fast)
+    live_web_text = get_live_website_text()
     
-    return web_text, pdf_files
-
-with st.spinner("Updating Knowledge Base..."):
-    web_txt, live_docs = get_live_intelligence()
+    # 2. Load the Manual PDFs (Accurate)
+    ai_pdf_files, pdf_names = load_manual_pdfs()
 
 # --- CHAT ENGINE ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-def get_text_response(question):
-    
-    # HARDCODED CORRECT VALUES (The "Truth Source")
-    # This prevents the AI from guessing wrong if it misreads the PDF.
-    verified_specs = """
-    CORRECT NUTRITION FACTS (1oz / 28g Serving):
-    - **Queso Fresco (Natural):** 90 Calories | 5g Protein.
-    - **Oaxaca:** 80 Calories | 6g Protein.
-    - **Cotija:** 100 Calories | 6g Protein.
-    - **Panela:** 80 Calories | 6g Protein.
-    - **Requesón:** 45 Calories | 3g Protein.
-    - **Quesadilla:** 100 Calories | 7g Protein.
-    """
+def get_answer(question):
     
     system_prompt = f"""
-    You are the Senior Product Specialist for "Hispanic Cheese Makers-Nuestro Queso".
+    You are the Senior Sales AI for "Hispanic Cheese Makers-Nuestro Queso".
     
-    INTELLIGENCE SOURCES:
-    1. **VERIFIED FACTS:** Use the list below for Calories/Protein. These override the PDFs.
-    2. **DOCUMENTS:** Attached Sell Sheets.
-    3. **WEBSITE TEXT:** Contact info.
+    INTELLIGENCE SOURCE PRIORITY:
+    1. **MANUAL PDF DOCUMENTS (Attached):** I have attached {len(ai_pdf_files)} PDF Sell Sheets ({pdf_names}). 
+       - USE THESE FOR NUMBERS. 
+       - If user asks about Protein, Fat, Calories, or Ingredients, READ THE TABLE inside the PDF.
+       - *Example:* If Oaxaca spec sheet says "80 Calories", answer "80 Calories".
+       
+    2. **LIVE WEBSITE TEXT (Below):** Use this for current Contact Info, Address, and Marketing descriptions.
     
-    RULES:
-    1. **TEXT ONLY:** Do NOT provide images or image links. 
-       - If asked, say: "Please visit hcmakers.com/products to see our gallery."
+    BEHAVIOR:
+    - **TEXT ONLY:** Do not try to show images. Be descriptive.
+    - **ACCURACY:** Do not guess. If it's not in the PDF or Website, say "I don't have that specific spec on hand."
+    - **LANGUAGE:** Respond in the language of the user (English/Spanish).
     
-    2. **ACCURACY:**
-       - Use this list for Nutrition numbers:
-       {verified_specs}
-    
-    3. **CONTACTS:**
-       - Sales: Sandy Goldberg (847-258-0375)
-       - Plant: 815-443-2100 (Kent, IL)
-    
-    4. **LANG:** English or Spanish.
-    
-    WEBSITE CONTEXT:
-    {web_txt}
+    LIVE WEBSITE DATA:
+    {live_web_text}
     """
     
-    payload = [system_prompt] + live_docs + [question]
+    # Send User Q + Prompt + The PDF Files to the Brain
+    payload = [system_prompt] + ai_pdf_files + [question]
+    
     try:
-        # File wait loop
-        for f in live_docs:
-             while f.state.name == "PROCESSING": time.sleep(1); f = genai.get_file(f.name)
         return model.generate_content(payload).text
-    except:
-        return "Checking specifications... ask again."
+    except Exception as e:
+        return "I am reviewing the documents. Please ask again in a moment."
 
-# --- UI ---
+# --- UI DISPLAY ---
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask question...")
+    user_input = st.text_input("Ask about specs, nutrition, or company info...")
     submit = st.form_submit_button("Send")
 
 if submit and user_input:
-    with st.chat_message("user"): st.markdown(user_input)
+    # User Msg
+    with st.chat_message("user"):
+        st.markdown(user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
+    # AI Msg
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing..."):
-            response_text = get_text_response(user_input)
+        with st.spinner("Consulting Website & Documents..."):
+            response_text = get_answer(user_input)
             st.markdown(response_text)
             
     st.session_state.chat_history.append({"role": "assistant", "content": response_text})
