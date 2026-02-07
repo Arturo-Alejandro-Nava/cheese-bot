@@ -23,112 +23,114 @@ st.set_page_config(page_title="Hispanic Cheese Makers-Nuestro Queso", page_icon=
 # --- HEADER ---
 col1, col2 = st.columns([1, 4])
 with col1:
-    possible = ["logo.jpg", "logo.png", "logo.jpeg"]
+    possible = ["logo.jpg", "logo.png", "logo.jpeg", "logo"]
     found = False
     for p in possible:
         if os.path.exists(p):
-            st.image(p, width=130); found=True; break
+            st.image(p, width=130); found = True; break
     if not found: st.write("🧀")
 with col2:
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 st.markdown("---")
 
-# --- 1. THE "PROXY" IMAGE DOWNLOADER ---
-# This is the secret. It downloads the live website image to the server memory 
-# and displays it. This bypasses the "Broken Image" security block.
-def show_live_image(url):
-    try:
-        # Pretend to be a real browser so hcmakers.com doesn't block us
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Referer": "https://hcmakers.com/"
-        }
-        r = requests.get(url, headers=headers, timeout=3)
-        if r.status_code == 200:
-            st.image(io.BytesIO(r.content), width=500)
-        else:
-            # Fallback if really strict blocking is active
-            st.markdown(f"**Image Link:** [Click to view]({url})")
-    except:
-        st.markdown(f"**Image Link:** [Click to view]({url})")
+# --- 1. THE "ANTI-BLOCK" IMAGE RENDERER ---
+def show_html_image(url):
+    # This embeds HTML directly, which usually bypasses Streamlit/Server blocking
+    st.markdown(
+        f"""
+        <div style="margin-top:10px; margin-bottom:10px;">
+            <img src="{url}" style="width:100%; max-width:500px; border-radius:8px; box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-# --- 2. LIVE ASSET HUNTER (Text + Images + PDFs) ---
-@st.cache_resource(ttl=3600)
-def live_site_scan():
+# --- 2. LIVE UNIVERSAL CRAWLER (Images + Text + PDFs) ---
+@st.cache_resource(ttl=3600) # Updates every hour automatically
+def crawl_website():
+    # 1. TEXT & IMAGES
+    urls_to_scan = [
+        "https://hcmakers.com/capabilities/", # Vats, Factory, Equipment
+        "https://hcmakers.com/products/",     # Cheese
+        "https://hcmakers.com/contact-us/",   # Office/Buildings
+        "https://hcmakers.com/quality/",
+        "https://hcmakers.com/about-us/",
+        "https://hcmakers.com/"
+    ]
+    
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # 1. THE URLS TO SCAN
-    pages = [
-        "https://hcmakers.com/", 
-        "https://hcmakers.com/products/", 
-        "https://hcmakers.com/capabilities/", # Factory photos here
-        "https://hcmakers.com/contact-us/",   # Office/Map here
-        "https://hcmakers.com/quality/"
-    ]
+    scraped_text = "WEBSITE DATA:\n"
+    found_images = "LIVE IMAGE DATABASE (URLS & CONTEXT):\n"
+    
+    seen_img_urls = []
+    
+    status_msg = st.empty()
+    status_msg.text("🕵️ scanning live website for images & updates...")
 
-    # 2. IMAGE HUNTING
-    image_catalog = "--- AVAILABLE LIVE WEBSITE IMAGES ---\n"
-    web_text = "--- WEBSITE TEXT ---\n"
-    
-    seen_images = []
-    
-    for url in pages:
+    for url in urls_to_scan:
         try:
             r = requests.get(url, headers=headers)
             soup = BeautifulSoup(r.content, 'html.parser')
             
-            # A. Grab Text
-            clean = soup.get_text(" ", strip=True)[:3000]
-            web_text += f"\nPAGE: {url}\n{clean}\n"
+            # Grab Text
+            page_content = soup.get_text(" ", strip=True)[:3000]
+            scraped_text += f"\n-- SOURCE: {url} --\n{page_content}\n"
             
-            # B. Grab Images
-            for img in soup.find_all('img'):
-                src = img.get('data-src') or img.get('src')
-                alt = img.get('alt', 'image').replace("\n", "")
+            # GRAB ALL IMAGES (Even with weird names)
+            imgs = soup.find_all('img')
+            for img in imgs:
+                # 1. Find URL (Check lazy load slots)
+                src = img.get('data-src') or img.get('src') or img.get('data-lazy-src')
                 if not src: continue
+                
+                # 2. Fix Relative Links
                 if src.startswith("/"): src = "https://hcmakers.com" + src
                 
-                # Deduplicate & Filter Junk
-                if src in seen_images: continue
-                if any(x in src.lower() for x in ['logo', 'icon', 'svg', 'spacer', 'blank', 'facebook']): continue
+                # 3. Clean Filter (No icons/logos/socials)
+                if any(x in src.lower() for x in ['logo', 'icon', 'svg', 'spacer', 'pixel', 'facebook', 'linkedin']):
+                    continue
+                if src in seen_img_urls: continue
                 
-                # Make the "AI Description" basically just the filename + alt text
-                # This helps it find 'oaxaca-bites.png' even if Alt tag is empty
-                fname = src.split("/")[-1]
+                # 4. Context Capture
+                # We grab the 'alt' text OR the parent text to help the AI know what this weird file is
+                alt_txt = img.get('alt', 'No Description')
+                parent_txt = img.find_parent().get_text().strip()[:50]
                 
-                image_catalog += f"FILE: {fname} | ALT: {alt} | URL: {src}\n"
-                seen_images.append(src)
+                found_images += f"- CONTEXT: {alt_txt} | FILE: {src.split('/')[-1]} | FULL_URL: {src}\n"
+                seen_img_urls.append(src)
+                
         except: continue
-
-    # 3. PDF HUNTING (Inside the Zip)
-    doc_text = "--- DOCUMENTS FOUND ---\n"
-    live_pdfs = []
+        
+    # 2. DOCUMENT DOWNLOADER (Live from Zip)
+    docs_ready = []
+    doc_names = []
     try:
-        r = requests.get("https://hcmakers.com/resources/", headers=headers)
-        soup = BeautifulSoup(r.content, 'html.parser')
+        r_res = requests.get("https://hcmakers.com/resources/", headers=headers)
+        soup_res = BeautifulSoup(r_res.content, 'html.parser')
         
-        # Look for the big zip file
-        zip_url = next((a['href'] for a in soup.find_all('a', href=True) if a['href'].endswith('.zip')), None)
+        # Hunt for ZIP
+        zip_link = next((a['href'] for a in soup_res.find_all('a', href=True) if a['href'].endswith('.zip')), None)
         
-        if zip_url:
-            z_resp = requests.get(zip_url, headers=headers)
-            with zipfile.ZipFile(io.BytesIO(z_resp.content)) as z:
-                idx = 0
-                for filename in z.namelist():
-                    if filename.lower().endswith(".pdf") and idx < 5:
-                        doc_text += f"- {filename}\n"
-                        # Prepare for AI
-                        with open(f"temp_{idx}.pdf", "wb") as f: f.write(z.read(filename))
-                        live_pdfs.append(genai.upload_file(f"temp_{idx}.pdf", display_name=filename))
-                        idx += 1
+        if zip_link:
+            status_msg.text("📦 Unzipping live catalog...")
+            z_data = requests.get(zip_link, headers=headers).content
+            with zipfile.ZipFile(io.BytesIO(z_data)) as z:
+                count = 0
+                for fname in z.namelist():
+                    if fname.endswith(".pdf") and count < 6:
+                        with open(f"temp_{count}.pdf", "wb") as f: f.write(z.read(fname))
+                        docs_ready.append(genai.upload_file(f"temp_{count}.pdf", display_name=fname))
+                        doc_names.append(fname)
+                        count += 1
     except: pass
     
-    return web_text, image_catalog, doc_text, live_pdfs
+    status_msg.empty()
+    return scraped_text, found_images, docs_ready, doc_names
 
-# --- INITIAL LOAD ---
-with st.spinner("Scanning live website & unzipping catalogs..."):
-    # This grabs EVERYTHING fresh from the web
-    web_txt, img_lib, doc_list, pdf_files = live_site_scan()
+# --- LOAD DATA ---
+with st.spinner("Connecting to Live Server..."):
+    web_txt, img_lib, pdf_files, doc_list = crawl_website()
 
 # --- BRAIN ---
 if "chat_history" not in st.session_state:
@@ -139,46 +141,41 @@ def get_answer(question):
     system_prompt = f"""
     You are the Sales AI for Nuestro Queso.
     
-    RESOURCES:
-    {img_lib}
-    {doc_list}
+    SOURCE MATERIAL:
+    1. **LIVE IMAGE DATABASE (Below):** This is a list of ALL images found on the website right now. 
+       - Some filenames are strange (e.g. 'Группа-масок-28'). 
+       - YOU MUST MATCH the user's request to the 'CONTEXT' or best guess.
+       - 'Closed Vat' might match 'Группа' files found on the 'Capabilities' page. Use context clues.
+       - 'Fries' matches 'CheeseFries'.
+       
+    2. **DOCUMENTS (PDFs):** I have attached these. Use them for specs.
+    3. **TEXT:** Website text for facts.
     
     RULES:
-    1. **FINDING IMAGES:** If the user asks for an image, look at the 'AVAILABLE LIVE WEBSITE IMAGES' list.
-       - Use "Fuzzy Search" on the 'FILE' name.
-       - If asking for "Bites", look for 'OaxacaBites'.
-       - If asking for "Office", look for 'display.jpg' or similar corporate image.
-       - If asking for "Plant", look for '7777-1' or 'PLANT'.
-       - **OUTPUT:** Start response with `<<<IMG: URL_HERE>>>`.
+    - **IMAGES:** Return the URL of the best matching image using tag: `<<<IMG: URL_HERE>>>`.
+    - **FALLBACK:** If the user asks for 'Office', find an image that looks corporate (e.g. 'display.jpg' or 'building').
+    - **LANGUAGE:** English/Spanish.
     
-    2. **CONTACT INFO:**
-       - Sales (Sandy): 847-258-0375
-       - Marketing (Arturo): 847-502-0934
-       - Office: 224-366-4320
-       
-    3. **DATA:** Use PDFs (attached) for nutrition specs.
+    IMAGE DATABASE:
+    {img_lib}
     
     WEBSITE CONTEXT:
     {web_txt}
     """
     
     payload = [system_prompt] + pdf_files + [question]
-    try:
-        # We try-wait loop for active files
-        for f in pdf_files:
-             while f.state.name == "PROCESSING": time.sleep(1); f=genai.get_file(f.name)
-        return model.generate_content(payload).text
-    except: return "Retrieving data..."
+    try: return model.generate_content(payload).text
+    except: return "Scanning live assets..."
 
 # --- UI ---
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        if "img_url" in message:
-            show_live_image(message["img_url"])
+        if "img_src" in message:
+            show_html_image(message["img_src"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask question...")
+    user_input = st.text_input("Ask a question...")
     submit = st.form_submit_button("Send")
 
 if submit and user_input:
@@ -187,20 +184,22 @@ if submit and user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing live data..."):
+        with st.spinner("Searching..."):
             raw = get_answer(user_input)
             
-            # Detect tag
-            match = re.search(r"<<<IMG: (.*?)>>>", raw)
             clean = re.sub(r"<<<IMG: .*?>>>", "", raw).strip()
             
-            st.markdown(clean)
+            # Image Tag Parser
+            img_match = re.search(r"<<<IMG: (.*?)>>>", raw)
+            found_src = None
             
-            url = None
-            if match:
-                url = match.group(1).strip()
-                show_live_image(url)
+            if img_match:
+                found_src = img_match.group(1).strip()
+            
+            st.markdown(clean)
+            if found_src:
+                show_html_image(found_src)
 
             msg = {"role": "assistant", "content": clean}
-            if url: msg["img_url"] = url
+            if found_src: msg["img_src"] = found_src
             st.session_state.chat_history.append(msg)
