@@ -22,7 +22,7 @@ st.set_page_config(
     page_icon="🧀"
 )
 
-# --- HEADER (Branding) ---
+# --- HEADER ---
 col1, col2 = st.columns([1, 4])
 with col1:
     possible_names = ["logo.jpg", "logo.png", "logo.jpeg", "logo"]
@@ -36,71 +36,77 @@ with col2:
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 st.markdown("---")
 
-# --- 1. LIVE WEBSITE SCRAPER (Auto-Updates) ---
-# This goes to the internet every hour to get the latest Text/Contacts
+# --- 1. LIVE WEBSITE SCRAPER (TEXT + VIDEOS) ---
 @st.cache_resource(ttl=3600) 
-def get_live_website_text():
+def get_live_website_data():
     urls = [
         "https://hcmakers.com/", 
         "https://hcmakers.com/products/", 
-        "https://hcmakers.com/capabilities/", # Factory Info
+        "https://hcmakers.com/capabilities/",
         "https://hcmakers.com/quality/", 
-        "https://hcmakers.com/contact-us/",   # Latest Phone #s
+        "https://hcmakers.com/contact-us/",   
         "https://hcmakers.com/about-us/",
-        "https://hcmakers.com/category-knowledge/"
+        "https://hcmakers.com/category-knowledge/" # Many videos here
     ]
     
-    combined_text = "--- LIVE WEBSITE CONTENT (Most Current Info) ---\n"
+    combined_data = "LIVE WEBSITE CONTENT:\n"
+    
     headers = {"User-Agent": "Mozilla/5.0"}
     
     for url in urls:
         try:
             r = requests.get(url, headers=headers)
             soup = BeautifulSoup(r.content, 'html.parser')
-            # Get text and clean it
+            
+            # A. EXTRACT TEXT
             text = soup.get_text(" ", strip=True)[:4000]
-            combined_text += f"\nPAGE: {url}\nTEXT: {text}\n"
+            
+            # B. EXTRACT VIDEO LINKS (YouTube)
+            video_links = []
+            iframes = soup.find_all('iframe')
+            for iframe in iframes:
+                src = iframe.get('src')
+                if src and ('youtube' in src or 'youtu.be' in src):
+                    video_links.append(f"VIDEO FOUND: {src}")
+            
+            # Append findings
+            combined_data += f"\n--- SOURCE: {url} ---\n"
+            if video_links:
+                combined_data += "VIDEOS ON PAGE:\n" + "\n".join(video_links) + "\n"
+            combined_data += f"TEXT CONTENT:\n{text}\n"
+            
         except:
             continue
             
-    return combined_text
+    return combined_data
 
-# --- 2. LOCAL MANUAL PDF LOADER (Deep Spec Logic) ---
-# This looks for PDFs you manually uploaded to GitHub
+# --- 2. LOCAL PDF LOADER (Specs/Nutrition) ---
 @st.cache_resource
 def load_manual_pdfs():
-    # Find all .pdf files in the folder
     pdf_files = glob.glob("*.pdf")
-    active_knowledge_docs = []
+    active_docs = []
     filenames = []
 
     if not pdf_files:
-        return [], "No PDF documents found. Please upload Sell Sheets to GitHub."
+        return [], "No PDFs uploaded."
 
     for pdf in pdf_files:
         try:
-            # Upload to Gemini Brain
             remote_file = genai.upload_file(path=pdf, display_name=pdf)
-            
-            # Wait for Google to process the visual tables
             while remote_file.state.name == "PROCESSING":
                 time.sleep(1)
                 remote_file = genai.get_file(remote_file.name)
             
             if remote_file.state.name == "ACTIVE":
-                active_knowledge_docs.append(remote_file)
+                active_docs.append(remote_file)
                 filenames.append(pdf)
-        except:
-            continue
+        except: continue
             
-    return active_knowledge_docs, ", ".join(filenames)
+    return active_docs, ", ".join(filenames)
 
 # --- INITIAL LOAD ---
-with st.spinner("Syncing Live Website Text & Loading Manual Documents..."):
-    # 1. Scrape the Web (Fast)
-    live_web_text = get_live_website_text()
-    
-    # 2. Load the Manual PDFs (Accurate)
+with st.spinner("Syncing Live Website Videos & Loading PDF Specs..."):
+    live_web_data = get_live_website_data()
     ai_pdf_files, pdf_names = load_manual_pdfs()
 
 # --- CHAT ENGINE ---
@@ -112,30 +118,31 @@ def get_answer(question):
     system_prompt = f"""
     You are the Senior Sales AI for "Hispanic Cheese Makers-Nuestro Queso".
     
-    INTELLIGENCE SOURCE PRIORITY:
-    1. **MANUAL PDF DOCUMENTS (Attached):** I have attached {len(ai_pdf_files)} PDF Sell Sheets ({pdf_names}). 
-       - USE THESE FOR NUMBERS. 
-       - If user asks about Protein, Fat, Calories, or Ingredients, READ THE TABLE inside the PDF.
-       - *Example:* If Oaxaca spec sheet says "80 Calories", answer "80 Calories".
-       
-    2. **LIVE WEBSITE TEXT (Below):** Use this for current Contact Info, Address, and Marketing descriptions.
+    SOURCES:
+    1. **PDF DOCUMENTS (Attached):** Use these for hard numbers (Nutrition, Specs).
+    2. **LIVE WEBSITE (Below):** Use this for general info and VIDEO LINKS.
     
-    BEHAVIOR:
-    - **TEXT ONLY:** Do not try to show images. Be descriptive.
-    - **ACCURACY:** Do not guess. If it's not in the PDF or Website, say "I don't have that specific spec on hand."
-    - **LANGUAGE:** Respond in the language of the user (English/Spanish).
+    RULES:
+    1. **PROVIDE VIDEO LINKS:** If the user asks about a topic (like "Spicy Cheese" or "Capabilities"), and there is a `VIDEO FOUND` link in the website text below, provide the URL.
+       - Example: "You can see our spicy cheese trend report here: [YouTube Link]"
+       - Make the link clickable.
+    
+    2. **NO IMAGES:** Do not show images directly. Text/Links only.
+    
+    3. **DATA ACCURACY:** Read numbers from the PDF tables.
+    
+    4. **LANG:** English or Spanish.
     
     LIVE WEBSITE DATA:
-    {live_web_text}
+    {live_web_data}
     """
     
-    # Send User Q + Prompt + The PDF Files to the Brain
     payload = [system_prompt] + ai_pdf_files + [question]
     
     try:
         return model.generate_content(payload).text
     except Exception as e:
-        return "I am reviewing the documents. Please ask again in a moment."
+        return "I am reviewing the data. Please ask again."
 
 # --- UI DISPLAY ---
 for message in st.session_state.chat_history:
@@ -143,16 +150,14 @@ for message in st.session_state.chat_history:
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask about specs, nutrition, or company info...")
+    user_input = st.text_input("Ask about products, nutrition, or videos...")
     submit = st.form_submit_button("Send")
 
 if submit and user_input:
-    # User Msg
     with st.chat_message("user"):
         st.markdown(user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-    # AI Msg
     with st.chat_message("assistant"):
         with st.spinner("Consulting Website & Documents..."):
             response_text = get_answer(user_input)
