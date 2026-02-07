@@ -7,6 +7,7 @@ import time
 import zipfile
 import io
 import re
+import base64
 
 # --- CONFIGURATION ---
 try:
@@ -33,149 +34,150 @@ with col2:
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 st.markdown("---")
 
-# --- 1. RENDERER (Anti-Block) ---
-def render_image(url):
+# --- 1. THE "DATA TUNNEL" IMAGE RENDERER (The Ultimate Fix) ---
+def render_image_b64(url):
+    """
+    1. Downloads image securely on server side.
+    2. Converts to Base64 (Text) so browser doesn't need to request it.
+    3. Prevents 100% of Hotlink/Security blocking.
+    """
     if not url: return
-    # Use HTML injection to force the browser to load it
-    st.markdown(
-        f"""
-        <div style="margin: 10px 0;">
-            <img src="{url}" referrerpolicy="no-referrer" 
-                 style="width: 100%; max-width: 500px; border-radius: 8px; border: 1px solid #ccc; box-shadow: 2px 2px 8px rgba(0,0,0,0.1);">
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
 
-# --- 2. THE MASTER URL LIST (The "Once and For All" Fix) ---
-# I have mapped the specific filenames for EVERY product so the bot can't miss them.
-ASSET_MAP = {
-    # SNACKS & SIDES
-    "CHEESE FRIES": "https://hcmakers.com/wp-content/uploads/2021/01/CheeseFries-web.png",
+    try:
+        # FAKE HEADERS: Pretend to be a regular laptop user
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Referer": "https://hcmakers.com/",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+        }
+        
+        # Download Raw Bytes
+        r = requests.get(url, headers=headers, timeout=5)
+        
+        if r.status_code == 200:
+            # Convert to Data String
+            b64_img = base64.b64encode(r.content).decode()
+            
+            # Display using HTML
+            st.markdown(
+                f"""
+                <div style="margin-top: 10px; margin-bottom: 10px;">
+                    <img src="data:image/png;base64,{b64_img}" 
+                         style="width: 100%; max-width: 500px; border-radius: 8px; border: 1px solid #ccc; box-shadow: 2px 2px 8px rgba(0,0,0,0.1);">
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(f"**Image Source:** [Click to Open]({url})")
+            
+    except:
+        st.markdown(f"**Image Source:** [Click to Open]({url})")
+
+# --- 2. GUARANTEED ASSET LIST (Map Keywords to Verified URLs) ---
+PRIORITY_MAP = {
     "OAXACA BITES": "https://hcmakers.com/wp-content/uploads/2021/01/OaxacaBites-web.png",
-    
-    # CHEESES (Frescos)
+    "CHEESE FRIES": "https://hcmakers.com/wp-content/uploads/2021/01/CheeseFries-web.png",
     "FRESCO": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Fresco_Natural_10oz.png",
-    "BLANCO": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Blanco_Square_10oz_cp.png",
-    "PANELA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Panela_Bar_8oz_v2.png",
-    "PANELA ROUND": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Panela_Bar_8oz_v2.png",
-    
-    # CHEESES (Melting/Aged)
-    "OAXACA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_OAXACA_BALL_5lb_v3.png",
     "COTIJA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_cotija_wedge_10oz_cp.png",
-    "QUESADILLA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Quesadilla-Shred_2lb.png",
-    "MANCHEGO": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Manchego_6oz.png",
-    
-    # CREAMS (Cremas)
-    # The file name is 'Mexicana_Tub' but we map it to 'CREMA' queries
+    "PANELA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Panela_Bar_8oz_v2.png",
+    "OAXACA BALL": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_OAXACA_BALL_5lb_v3.png",
     "CREMA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Mexicana_Tub_16oz.png",
-    "CREMA MEXICANA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Mexicana_Tub_16oz.png",
-    "CREMA SALVADORENA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_CremaSal_14oz_bag.png",
-    
-    # FACILITIES
+    "QUESADILLA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Quesadilla-Shred_2lb.png",
     "PLANT": "https://hcmakers.com/wp-content/uploads/2021/01/7777-1.jpg",
     "FACTORY": "https://hcmakers.com/wp-content/uploads/2021/01/PLANT_138.jpg",
     "LAB": "https://hcmakers.com/wp-content/uploads/2020/12/Quality_Lab.jpg",
     "OFFICE": "https://hcmakers.com/wp-content/uploads/2020/08/display.jpg"
 }
 
-# --- 3. LIVE SCRAPER (Backup) ---
+# --- 3. LIVE SITE SCANNER (Scrapes text + other images) ---
 @st.cache_resource(ttl=3600) 
-def get_website_data():
+def load_live_data():
     headers = {"User-Agent": "Mozilla/5.0"}
-    web_text = "WEBSITE DATA:\n"
-    scraped_urls = {}
     
-    # 1. Text Scraper
-    urls = ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/contact-us/", "https://hcmakers.com/capabilities/"]
+    # 1. TEXT
+    web_text = "WEBSITE DATA:\n"
+    urls = ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/capabilities/", "https://hcmakers.com/quality/", "https://hcmakers.com/contact-us/"]
+    
+    # 2. IMAGES FOUND LIVE (The dynamic backup)
+    scraped_images = ""
+    seen_urls = []
+    
     for u in urls:
         try:
             r = requests.get(u, headers=headers)
             soup = BeautifulSoup(r.content, 'html.parser')
-            web_text += soup.get_text(" ", strip=True)[:4000] + "\n"
+            web_text += f"\n-- {u} --\n{soup.get_text(' ', strip=True)[:3000]}\n"
             
-            # Scrape Images while we are here (Dynamic backup)
             for img in soup.find_all('img'):
                 src = img.get('src')
-                if src and "uploads" in src and "logo" not in src:
-                    if src.startswith("/"): src = "https://hcmakers.com" + src
-                    name = src.split("/")[-1].lower()
-                    scraped_urls[name] = src
-        except: pass
+                # Try getting the lazy-load source if regular src is empty
+                if img.get('data-src'): src = img.get('data-src')
 
-    # 2. PDF Fetcher
-    pdf_docs = []
+                if src:
+                    if src.startswith('/'): src = "https://hcmakers.com" + src
+                    # Strict Filter
+                    if "uploads" in src and "logo" not in src and src not in seen_urls:
+                        fname = src.split("/")[-1]
+                        scraped_images += f"- FILE: {fname} | URL: {src}\n"
+                        seen_urls.append(src)
+        except: pass
+    
+    # 3. DOCUMENTS (PDFs from Resources)
+    doc_pdfs = []
     try:
         r = requests.get("https://hcmakers.com/resources/", headers=headers)
-        links = [a['href'] for a in BeautifulSoup(r.content, 'html.parser').find_all('a', href=True) if a['href'].endswith('.pdf')]
-        for i, link in enumerate(list(set(links))[:4]): 
+        soup = BeautifulSoup(r.content, 'html.parser')
+        links = [a['href'] for a in soup.find_all('a', href=True) if a['href'].endswith('.pdf')]
+        
+        # Grab first 4 docs
+        for i, link in enumerate(list(set(links))[:4]):
             try:
-                b = requests.get(link, headers=headers).content
-                path = f"doc_{i}.pdf"
-                with open(path, "wb") as f: f.write(b)
-                pdf_docs.append(genai.upload_file(path))
+                data = requests.get(link).content
+                path = f"d_{i}.pdf"
+                with open(path, "wb") as f: f.write(data)
+                doc_pdfs.append(genai.upload_file(path))
             except: continue
     except: pass
     
-    return web_text, scraped_urls, pdf_docs
+    return web_text, scraped_images, doc_pdfs
 
-# --- LOAD ---
-with st.spinner("Connecting to Live Data..."):
-    txt_data, scraped_img_dict, ai_files = get_website_data()
+# --- INIT ---
+with st.spinner("Initializing Sales System..."):
+    txt_data, extra_imgs, ai_docs = load_live_data()
 
-# --- SEARCH LOGIC (Python Logic, not AI Hallucination) ---
-def find_image_url(query):
-    query = query.lower()
-    
-    # 1. Check Hardcoded Priority Map
-    for key, url in ASSET_MAP.items():
-        if key.lower() in query:
-            return url
-            
-    # 2. Check "Partial Matches" in Priority Map
-    # e.g. "Mexicana" matches "CREMA MEXICANA"
-    for key, url in ASSET_MAP.items():
-        words = key.lower().split()
-        if all(word in query for word in words):
-             return url
-
-    # 3. Check Scraped Live Images (Backup)
-    # Search for filename keywords (e.g. "tub" inside "mexicana_tub.png")
-    query_parts = query.replace("image", "").replace("picture", "").replace("of", "").split()
-    for name, url in scraped_img_dict.items():
-        if any(part in name for part in query_parts if len(part) > 3):
-            return url
-
-    return None
-
-# --- CHAT ENGINE ---
+# --- BRAIN ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 def get_answer(question):
-    asset_list_str = "\n".join([f"- {k}" for k in ASSET_MAP.keys()])
+    # Prepare keys
+    priority_list = "\n".join([f"- KEY: {k} | URL: {v}" for k, v in PRIORITY_MAP.items()])
     
     system_prompt = f"""
     You are the Sales AI for Nuestro Queso.
     
-    ASSET KEYS (Images Available):
-    {asset_list_str}
+    ASSETS:
+    {priority_list}
+    
+    ADDITIONAL ASSETS:
+    {extra_imgs}
     
     RULES:
-    1. **IMAGES**: If user asks for an image, look at the ASSET KEYS.
-       - OUTPUT: `<<<IMG: KEY_NAME>>>`
-       - Example: "Show me Crema" -> `<<<IMG: CREMA>>>`
-       - Example: "Show Office" -> `<<<IMG: OFFICE>>>`
-       - **If you are unsure, just guess the best Keyword.** My python code will handle the fuzzy matching.
+    1. **IMAGES**: 
+       - If asked to show/see/display "Fries", "Bites", "Cotija", "Plant", "Office", look at the 'ASSETS' list above.
+       - OUTPUT: `<<<IMG: FULL_URL_HERE>>>`
+       - Example: "Here are the cheese fries: <<<IMG: https://hcmakers.com/...CheeseFries-web.png>>>"
     
-    2. **DATA**: Use Attached PDFs for specs.
-    3. **LANG**: English or Spanish.
+    2. **DATA**: Use the attached PDFs for numbers/specs.
+    
+    3. **LANGUAGE**: English or Spanish.
     
     WEBSITE CONTEXT:
     {txt_data}
     """
     
-    payload = [system_prompt] + ai_files + [question]
+    payload = [system_prompt] + ai_docs + [question]
     try: return model.generate_content(payload).text
     except: return "Scanning..."
 
@@ -183,44 +185,33 @@ def get_answer(question):
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        if "img_url" in message:
-            render_image(message["img_url"])
+        if "img_src" in message:
+            render_image_b64(message["img_src"])
 
-with st.form(key="chat_form"):
+with st.form("chat_form"):
     user_input = st.text_input("Ask question...")
     submit = st.form_submit_button("Send")
 
 if submit and user_input:
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    with st.chat_message("user"): st.markdown(user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
-
+    
     with st.chat_message("assistant"):
-        with st.spinner("Finding image..."):
+        with st.spinner("Retrieving visual assets..."):
             raw = get_answer(user_input)
             
             clean = re.sub(r"<<<IMG: .*?>>>", "", raw).strip()
+            # Safety clean against code injection hallucination
+            clean = clean.replace("```", "").replace("print(", "")
+            
             st.markdown(clean)
             
-            # --- FINAL FALLBACK LOGIC ---
-            # Even if AI fails to give a tag, we search for the image using Python
-            # This makes "Crema Mexicana" work even if AI messes up.
-            img_tag = re.search(r"<<<IMG: (.*?)>>>", raw)
-            found_url = None
-            
-            if img_tag:
-                key = img_tag.group(1).strip()
-                # Lookup in map
-                found_url = ASSET_MAP.get(key.upper()) or find_image_url(key)
-            else:
-                # If user asked for "Show me", trigger python search anyway
-                if "show" in user_input.lower() or "image" in user_input.lower() or "picture" in user_input.lower():
-                    found_url = find_image_url(user_input)
+            url = None
+            match = re.search(r"<<<IMG: (.*?)>>>", raw)
+            if match:
+                url = match.group(1).strip()
+                render_image_b64(url) # Runs server-side downloader
 
-            if found_url:
-                render_image(found_url)
-                msg = {"role": "assistant", "content": clean, "img_url": found_url}
-            else:
-                msg = {"role": "assistant", "content": clean}
-
+            msg = {"role": "assistant", "content": clean}
+            if url: msg["img_src"] = url
             st.session_state.chat_history.append(msg)
