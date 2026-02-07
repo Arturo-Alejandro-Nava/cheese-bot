@@ -7,7 +7,6 @@ import time
 import zipfile
 import io
 import re
-import base64
 
 # --- CONFIGURATION ---
 try:
@@ -34,180 +33,159 @@ with col2:
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 st.markdown("---")
 
-# --- 1. THE "SMUGGLER" IMAGE RENDERER (The Anti-Block Fix) ---
-def render_image_b64(url):
+# --- 1. HTML INJECTION RENDERER (The Anti-Block) ---
+def render_image(url):
     """
-    Downloads image on server (Python), converts to Base64 text string,
-    and displays via HTML. Bypasses 100% of website security blocks.
+    Forces the browser to load the image directly from the source,
+    stripping the 'Referer' to bypass security blocks.
     """
     if not url: return
-
-    try:
-        # We spoof a real browser User Agent so they don't block Python
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://hcmakers.com/"
-        }
-        
-        # Download Raw Data
-        r = requests.get(url, headers=headers, timeout=5)
-        
-        if r.status_code == 200:
-            # Convert to Base64 String
-            b64_string = base64.b64encode(r.content).decode()
-            
-            # Inject HTML with Data URI
-            html = f"""
-            <div style="margin: 10px 0;">
-                <img src="data:image/jpeg;base64,{b64_string}" 
-                     style="max-width: 500px; width: 100%; border-radius: 8px; box-shadow: 0px 4px 10px rgba(0,0,0,0.1);">
-            </div>
-            """
-            st.markdown(html, unsafe_allow_html=True)
-        else:
-            # Last Resort if file is gone
-            st.markdown(f"[Click to View Image Externally]({url})")
-            
-    except:
-        st.markdown(f"[Click to View Image Externally]({url})")
-
-# --- 2. LIVE CRAWLER (The Hunter) ---
-@st.cache_resource(ttl=3600)
-def get_live_data():
-    headers = {"User-Agent": "Mozilla/5.0"}
     
-    # TEXT SCRAPING
-    web_text = "WEBSITE DATA:\n"
-    # IMAGE CATALOGING
-    image_catalog = "AVAILABLE LIVE IMAGES (URLs):\n"
+    html = f"""
+    <div style="margin: 10px 0;">
+        <img src="{url}" 
+             referrerpolicy="no-referrer"
+             style="max-width: 500px; width: 100%; border-radius: 8px; border: 1px solid #ddd; box-shadow: 2px 2px 8px rgba(0,0,0,0.1);">
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+# --- 2. LIVE UNIVERSAL CRAWLER (The Aggressive Scraper) ---
+@st.cache_resource(ttl=3600) 
+def get_live_data():
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"}
     
     urls = [
         "https://hcmakers.com/", 
         "https://hcmakers.com/products/", 
-        "https://hcmakers.com/capabilities/", # Plant photos
-        "https://hcmakers.com/quality/", 
-        "https://hcmakers.com/contact-us/",   # Office/Map
-        "https://hcmakers.com/about-us/"
+        "https://hcmakers.com/capabilities/", # Factory images
+        "https://hcmakers.com/contact-us/", 
+        "https://hcmakers.com/quality/"
     ]
     
-    seen_images = []
+    web_text = "WEBSITE DATA:\n"
+    img_list = "FOUND IMAGES (LIVE):\n"
+    seen = []
     
-    status = st.empty()
-    status.text("Scanning live website for assets...")
-
     for u in urls:
         try:
             r = requests.get(u, headers=headers)
-            soup = BeautifulSoup(r.content, 'html.parser')
+            content_str = r.text
             
-            # Text
-            clean_text = soup.get_text(" ", strip=True)[:4000]
-            web_text += f"\nPAGE: {u}\nCONTENT: {clean_text}\n"
+            # A. Extract Text
+            soup = BeautifulSoup(content_str, 'html.parser')
+            web_text += f"\nPAGE: {u}\n{soup.get_text(' ', strip=True)[:4000]}\n"
             
-            # Images
-            imgs = soup.find_all('img')
-            for img in imgs:
-                # Handle Lazy Loading (data-src)
-                src = img.get('data-src') or img.get('src')
-                alt = img.get('alt', 'Image')
+            # B. Extract ALL Images (Regex Method)
+            # Finds http....png/jpg inside CSS, Scripts, and HTML
+            raw_links = re.findall(r'https?://[^\s<>"]+\.(?:jpg|jpeg|png|webp)', content_str)
+            
+            for src in raw_links:
+                if '\\' in src: src = src.replace('\\', '') # Fix JS encoded links
+                if src in seen: continue
                 
-                if src:
-                    if src.startswith("/"): src = "https://hcmakers.com" + src
-                    
-                    # Filtering Logic
-                    is_junk = any(x in src.lower() for x in ['logo', 'icon', 'svg', 'spacer', 'blank', 'pixel', 'facebook'])
-                    is_useful = "uploads" in src
-                    
-                    if is_useful and not is_junk and src not in seen_images:
-                        # Extract nice filename for AI context
-                        filename = src.split("/")[-1]
-                        image_catalog += f"DESC: {alt} ({filename}) | URL: {src}\n"
-                        seen_images.append(src)
+                # Filter Junk
+                lower = src.lower()
+                if any(x in lower for x in ['logo', 'icon', 'svg', 'spacer', 'blank', 'facebook']): continue
+                if "uploads" not in lower: continue
+                
+                # C. Filename Cleaning (Crucial for AI Understanding)
+                # Helps AI match "YBH_Mexicana" to "Crema Mexicana"
+                fname = src.split("/")[-1]
+                decoded_name = fname.replace("YBH", "").replace("_", " ").replace("-", " ").replace("web", "")
+                
+                img_list += f"- NAME: {decoded_name} | FULL_URL: {src}\n"
+                seen.append(src)
+                
         except: continue
-        
+
     # DOCUMENTS
-    doc_pdfs = []
+    pdf_docs = []
     try:
         r = requests.get("https://hcmakers.com/resources/", headers=headers)
-        links = [a['href'] for a in BeautifulSoup(r.content, 'html.parser').find_all('a', href=True) if a['href'].endswith('.pdf')]
-        for i, l in enumerate(list(set(links))[:5]):
+        links = re.findall(r'href=[\'"]?([^\'" >]+)', r.text)
+        pdf_links = [l for l in links if l.endswith(".pdf")]
+        
+        for i, link in enumerate(list(set(pdf_links))[:5]):
             try:
-                b = requests.get(l, headers=headers).content
+                if not link.startswith("http"): link = "https://hcmakers.com" + link
+                pdf_data = requests.get(link).content
                 path = f"d_{i}.pdf"
-                with open(path, "wb") as f: f.write(b)
-                doc_pdfs.append(genai.upload_file(path))
+                with open(path, "wb") as f: f.write(pdf_data)
+                pdf_docs.append(genai.upload_file(path))
             except: continue
     except: pass
     
-    status.empty()
-    return web_text, image_catalog, doc_pdfs
+    return web_text, img_list, pdf_docs
 
-# --- INIT ---
-with st.spinner("Syncing Live Data..."):
-    txt_data, img_lib, ai_docs = get_live_data()
+# --- LOAD ---
+with st.spinner("Scraping live site for Crema & Cheese images..."):
+    text_data, img_catalog, ai_files = get_live_data()
 
 # --- BRAIN ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-def get_answer(question):
+def get_response(question):
     
     system_prompt = f"""
     You are the Sales AI for Nuestro Queso.
     
-    ASSETS AVAILABLE (Live Scraped URLs):
-    {img_lib}
+    ASSET LIBRARY (Scraped from Live Website):
+    {img_catalog}
     
-    RULES:
-    1. **FINDING IMAGES**:
-       - Scan the 'ASSETS AVAILABLE' list.
-       - Use "Fuzzy Logic":
-         - User: "Cotija" -> Look for `cotija` in DESC or URL. (e.g., `YBH_cotija_wedge...png`)
-         - User: "Plant" or "Factory" -> Look for `7777` or `PLANT`.
-         - User: "Office" -> Look for `display` or `building` from Contact page.
-         - User: "Bites" -> Look for `OaxacaBites`.
-       - **OUTPUT FORMAT:** Start response with `<<<IMG: FULL_URL_HERE>>>`
+    RULES FOR IMAGES:
+    1. **FIND THE BEST MATCH:** Look at the 'NAME' field in the list above. 
+       - "Crema Mexicana" -> Look for names with 'Mexicana', 'Tub', or 'Cream'.
+       - "Cotija" -> Look for 'Cotija', 'Wedge', or 'Quarter'.
+       - "Office" -> Look for 'Display', 'Building'.
+       
+    2. **OUTPUT:** Return the EXACT URL tag: `<<<IMG: https://...>>>`.
     
-    2. **DATA**: Use Attached PDFs for specs.
-    3. **LANG**: English or Spanish.
+    3. **BE PROACTIVE:** If the user asks for "Crema Mexicana", DO NOT SAY "I don't have it." Search the list for `Mexicana_Tub` or similar. It IS there.
+    
+    4. **LANG:** English/Spanish.
     
     WEBSITE CONTEXT:
-    {txt_data}
+    {text_data}
     """
     
-    payload = [system_prompt] + ai_docs + [question]
+    payload = [system_prompt] + ai_files + [question]
     try: return model.generate_content(payload).text
-    except: return "Retrieving..."
+    except: return "Scanning..."
 
 # --- UI ---
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        if "img_src" in message:
-            render_image_b64(message["img_src"])
+        if "img_url" in message:
+            render_image(message["img_url"])
 
-with st.form("chat_form"):
-    user_input = st.text_input("Ask about products or request an image...")
+with st.form(key="chat_form"):
+    user_input = st.text_input("Ask question... / Pregunta...")
     submit = st.form_submit_button("Send")
 
 if submit and user_input:
-    with st.chat_message("user"): st.markdown(user_input)
+    with st.chat_message("user"):
+        st.markdown(user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
-    
+
     with st.chat_message("assistant"):
-        with st.spinner("Processing..."):
-            raw = get_answer(user_input)
+        with st.spinner("Locating..."):
+            raw = get_response(user_input)
             
             clean = re.sub(r"<<<IMG: .*?>>>", "", raw).strip()
+            # Safety clean
+            clean = clean.replace("```python", "").replace("```", "")
+            
+            st.markdown(clean)
             
             url = None
             match = re.search(r"<<<IMG: (.*?)>>>", raw)
             if match:
                 url = match.group(1).strip()
-                
-            st.markdown(clean)
-            if url: render_image_b64(url) # Using Smuggler Function
+                render_image(url)
 
             msg = {"role": "assistant", "content": clean}
-            if url: msg["img_src"] = url
+            if url: msg["img_url"] = url
             st.session_state.chat_history.append(msg)
