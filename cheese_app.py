@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 import os
 import time
 import glob
+import re
 
 # --- CONFIGURATION ---
 try:
@@ -36,7 +37,7 @@ with col2:
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 st.markdown("---")
 
-# --- 1. LIVE WEBSITE SCRAPER (TEXT + VIDEOS) ---
+# --- 1. LIVE DATA SCRAPER (Text + VIDEOS) ---
 @st.cache_resource(ttl=3600) 
 def get_live_website_data():
     urls = [
@@ -50,35 +51,45 @@ def get_live_website_data():
     ]
     
     combined_data = "LIVE WEBSITE CONTENT:\n"
+    found_videos = []
     
     headers = {"User-Agent": "Mozilla/5.0"}
     
     for url in urls:
         try:
             r = requests.get(url, headers=headers)
-            soup = BeautifulSoup(r.content, 'html.parser')
+            content = r.content
+            soup = BeautifulSoup(content, 'html.parser')
             
             # A. EXTRACT TEXT
             text = soup.get_text(" ", strip=True)[:4000]
             
-            # B. EXTRACT VIDEO LINKS (YouTube)
-            video_links = []
+            # B. EXTRACT VIDEO LINKS (IFRAME)
+            # YouTube videos are usually in iframes on WordPress sites
             iframes = soup.find_all('iframe')
             for iframe in iframes:
                 src = iframe.get('src')
                 if src and ('youtube' in src or 'youtu.be' in src):
-                    video_links.append(f"VIDEO FOUND: {src}")
-            
+                    clean_link = src.split('?')[0] # Remove auto-play params
+                    # Convert embed to watch link for cleaner clicking
+                    if "embed" in clean_link:
+                        vid_id = clean_link.split("/")[-1]
+                        watch_link = f"https://www.youtube.com/watch?v={vid_id}"
+                        found_videos.append(f"TOPIC: Video found on {url} | LINK: {watch_link}")
+                    else:
+                        found_videos.append(f"TOPIC: Video on {url} | LINK: {clean_link}")
+
             # Append findings
-            combined_data += f"\n--- SOURCE: {url} ---\n"
-            if video_links:
-                combined_data += "VIDEOS ON PAGE:\n" + "\n".join(video_links) + "\n"
-            combined_data += f"TEXT CONTENT:\n{text}\n"
+            combined_data += f"\n--- SOURCE: {url} ---\n{text}\n"
             
         except:
             continue
             
-    return combined_data
+    # Combine video list into the brain text
+    video_section = "\n--- OFFICIAL VIDEO LIBRARY (You MUST share these links) ---\n"
+    video_section += "\n".join(list(set(found_videos)))
+            
+    return combined_data + video_section
 
 # --- 2. LOCAL PDF LOADER (Specs/Nutrition) ---
 @st.cache_resource
@@ -105,7 +116,7 @@ def load_manual_pdfs():
     return active_docs, ", ".join(filenames)
 
 # --- INITIAL LOAD ---
-with st.spinner("Syncing Live Website Videos & Loading PDF Specs..."):
+with st.spinner("Scanning website for Videos, Text & PDF Specs..."):
     live_web_data = get_live_website_data()
     ai_pdf_files, pdf_names = load_manual_pdfs()
 
@@ -119,21 +130,22 @@ def get_answer(question):
     You are the Senior Sales AI for "Hispanic Cheese Makers-Nuestro Queso".
     
     SOURCES:
-    1. **PDF DOCUMENTS (Attached):** Use these for hard numbers (Nutrition, Specs).
-    2. **LIVE WEBSITE (Below):** Use this for general info and VIDEO LINKS.
+    1. **OFFICIAL VIDEO LIBRARY:** Listed in the website text below.
+    2. **PDF DOCUMENTS (Attached):** Use these for hard numbers (Nutrition, Specs).
+    3. **LIVE WEBSITE:** Contact info and location.
     
     RULES:
-    1. **PROVIDE VIDEO LINKS:** If the user asks about a topic (like "Spicy Cheese" or "Capabilities"), and there is a `VIDEO FOUND` link in the website text below, provide the URL.
-       - Example: "You can see our spicy cheese trend report here: [YouTube Link]"
-       - Make the link clickable.
+    1. **PROVIDE VIDEO LINKS:** If the user asks about a topic (like "Spicy Cheese" or "Factory"), scan the 'OFFICIAL VIDEO LIBRARY' in the text below. 
+       - IF a match is found, say: "Here is a video on that topic: [LINK]"
+       - You HAVE permission to output links.
     
-    2. **NO IMAGES:** Do not show images directly. Text/Links only.
+    2. **PROVIDE DOCUMENT LINKS:** If user asks for a Sell Sheet, tell them it is attached in my knowledge base and give a summary, but you can also direct them to `https://hcmakers.com/resources`.
     
     3. **DATA ACCURACY:** Read numbers from the PDF tables.
     
     4. **LANG:** English or Spanish.
     
-    LIVE WEBSITE DATA:
+    LIVE WEBSITE CONTEXT (Contains Video Links):
     {live_web_data}
     """
     
@@ -142,7 +154,7 @@ def get_answer(question):
     try:
         return model.generate_content(payload).text
     except Exception as e:
-        return "I am reviewing the data. Please ask again."
+        return "I am validating the video links. Please ask again."
 
 # --- UI DISPLAY ---
 for message in st.session_state.chat_history:
