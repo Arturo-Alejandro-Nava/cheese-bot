@@ -1,13 +1,13 @@
 import streamlit as st
 import google.generativeai as genai
+import os
 import requests
 from bs4 import BeautifulSoup
-import os
 import time
-import zipfile
 import io
 import fitz  # PyMuPDF
 import re
+import glob # Helper to scan filenames
 
 # --- CONFIGURATION ---
 try:
@@ -28,9 +28,7 @@ with col1:
     found = False
     for p in possible:
         if os.path.exists(p):
-            st.image(p, width=130)
-            found = True
-            break
+            st.image(p, width=130); found = True; break
     if not found: st.write("🧀")
 
 with col2:
@@ -38,150 +36,118 @@ with col2:
 
 st.markdown("---")
 
-# --- 1. PROXY IMAGE RENDERER (The Anti-Block Fix) ---
-def render_proxy_image(url, caption="Image"):
-    """
-    Downloads the image on the server (Python) acting as a real user,
-    then feeds the bytes to Streamlit. This Bypasses Hotlink Protection.
-    """
-    try:
-        # Headers mimicking a real Chrome Browser to trick the website
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Referer": "https://hcmakers.com/",
-            "Accept-Language": "en-US,en;q=0.9"
-        }
-        
-        # Download the RAW BYTES
-        r = requests.get(url, headers=headers, timeout=5, stream=True)
-        
-        if r.status_code == 200:
-            # Display the bytes directly. The website thinks a human downloaded it.
-            st.image(r.content, caption=caption, width=500)
-        else:
-            st.warning(f"Image Locked by Source. [Click here to view]({url})")
-            
-    except Exception as e:
-        # Fallback text link
-        st.markdown(f"**View Image:** [Click Here]({url})")
+# --- 1. LOCAL IMAGE LOADER ---
+def show_local_image(filename):
+    if os.path.exists(filename):
+        st.image(filename, width=500)
+    else:
+        # Retry with fuzzy matching logic if exact name isn't found
+        all_files = os.listdir('.')
+        for f in all_files:
+            if filename.lower() in f.lower() and f.endswith(('.png', '.jpg', '.jpeg')):
+                st.image(f, width=500)
+                return
 
-# --- 2. MASTER ASSET LIBRARY ---
-# I manually verified these links. The Proxy Method needs EXACT links.
-ASSET_MAP = {
-    "CHEESE FRIES": "https://hcmakers.com/wp-content/uploads/2021/01/CheeseFries-web.png",
-    "OAXACA BITES": "https://hcmakers.com/wp-content/uploads/2021/01/OaxacaBites-web.png",
-    "PLANT": "https://hcmakers.com/wp-content/uploads/2021/01/7777-1.jpg",
-    "FACTORY": "https://hcmakers.com/wp-content/uploads/2021/01/PLANT_138.jpg",
-    "LAB": "https://hcmakers.com/wp-content/uploads/2020/12/Quality_Lab.jpg",
-    "OFFICE": "https://hcmakers.com/wp-content/uploads/2020/08/display.jpg",
-    "FRESCO": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Fresco_Natural_10oz.png",
-    "OAXACA BALL": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_OAXACA_BALL_5lb_v3.png",
-    "COTIJA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_cotija_quarter_5lb.png",
-    "PANELA": "https://hcmakers.com/wp-content/uploads/2020/12/YBH_Panela_Cryovac_5lb.png"
-}
+# --- 2. ASSET DISCOVERY (The Magic Logic) ---
+@st.cache_resource(ttl=3600)
+def inventory_assets():
+    # A. List all local images (The 59 files you uploaded)
+    image_files = glob.glob("*.jpg") + glob.glob("*.png") + glob.glob("*.jpeg") + glob.glob("*.webp")
+    # Clean list (remove logo)
+    image_files = [f for f in image_files if "logo" not in f]
+    
+    img_list_str = "AVAILABLE IMAGES:\n"
+    for img in image_files:
+        img_list_str += f"- {img}\n"
 
-# --- 3. SCRAPERS & DOCS ---
-@st.cache_resource(ttl=3600) 
-def get_knowledge_base():
-    # WEB TEXT
-    urls = ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/contact-us/"]
+    # B. Text Knowledge
+    urls = ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/contact-us/", "https://hcmakers.com/capabilities/", "https://hcmakers.com/quality/"]
     web_text = "WEBSITE DATA:\n"
     for u in urls:
         try:
             r = requests.get(u, headers={"User-Agent": "Mozilla/5.0"})
             s = BeautifulSoup(r.content, 'html.parser')
-            web_text += s.get_text(" ", strip=True)[:3000]
-        except: continue
+            web_text += s.get_text(" ", strip=True)[:3000] + "\n"
+        except: pass
 
-    # PDFS
-    ai_files = []
-    doc_text = "\nPDF FILES FOR VISUAL PREVIEW (Internal Names):\n"
-    
-    # We grab 3 documents live
+    # C. PDF Downloader
+    pdf_docs = []
     try:
         r = requests.get("https://hcmakers.com/resources/", headers={"User-Agent": "Mozilla/5.0"})
-        links = [a['href'] for a in BeautifulSoup(r.content, 'html.parser').find_all('a', href=True)]
+        soup = BeautifulSoup(r.content, 'html.parser')
+        links = [a['href'] for a in soup.find_all('a', href=True) if a['href'].endswith('.pdf')]
         
-        count = 0
-        for link in links:
-            if count > 4: break
-            if link.endswith(".pdf"):
-                try:
-                    pdf_bytes = requests.get(link).content
-                    path = f"doc_{count}.pdf"
-                    with open(path, "wb") as f: f.write(pdf_bytes)
-                    remote = genai.upload_file(path=path)
-                    ai_files.append(remote)
-                    
-                    # Generate Preview Image
-                    doc = fitz.open(path)
-                    pix = doc[0].get_pixmap(dpi=150)
-                    img_path = f"preview_{count}.png"
-                    pix.save(img_path)
-                    doc_text += f"- Sell Sheet {count}: saved as {img_path}\n"
-                    
-                    count += 1
-                except: continue
-                
-        # Wait for AI files
-        ready = []
-        for f in ai_files:
-            while f.state.name == "PROCESSING": time.sleep(1); f=genai.get_file(f.name)
-            ready.append(f)
+        for i, link in enumerate(list(set(links))[:5]):
+            try:
+                data = requests.get(link).content
+                path = f"doc_{i}.pdf"
+                with open(path, "wb") as f: f.write(data)
+                pdf_docs.append(genai.upload_file(path))
+            except: continue
         
-        return web_text, doc_text, ready
-    except: return web_text, "", []
+        # Wait for processing
+        active_pdfs = []
+        for p in pdf_docs:
+            for _ in range(10):
+                if p.state.name == "ACTIVE": active_pdfs.append(p); break
+                time.sleep(1)
+                p = genai.get_file(p.name)
+    except: active_pdfs = []
+
+    return web_text, img_list_str, active_pdfs
 
 # --- INITIAL LOAD ---
-with st.spinner("Downloading Assets..."):
-    web_txt, doc_map, ai_files = get_knowledge_base()
+with st.spinner("Indexing 50+ Images & Syncing Data..."):
+    web_txt, img_inventory, pdf_files = inventory_assets()
 
 # --- BRAIN ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 def get_answer(question):
-    # Construct Image List for Brain
-    img_prompt = "IMAGE LIBRARY (You MUST use these keys):\n"
-    for key in ASSET_MAP.keys():
-        img_prompt += f"- {key}\n"
-
+    # Verified contacts to prevent hallucinations
+    contacts = """
+    CONTACTS:
+    - VP Sales (Sandy Goldberg): 847-258-0375
+    - Marketing Dir (Arturo Nava): 847-502-0934
+    - Office: 224-366-4320
+    - Plant: 815-443-2100 (Kent, IL)
+    """
+    
     system_prompt = f"""
-    You are the Sales AI for Nuestro Queso.
+    You are the Senior Product Specialist for "Hispanic Cheese Makers-Nuestro Queso".
     
-    ASSETS:
-    {img_prompt}
-    
-    DOCUMENTS:
-    {doc_map}
+    ASSETS AVAILABLE:
+    {img_inventory}
     
     RULES:
-    1. **IMAGES**: If asked for an image (Fries, Bites, Plant, Office), find the matching Key in 'IMAGE LIBRARY'.
-       - OUTPUT: `<<<IMG: KEY_NAME>>>` (e.g. `<<<IMG: CHEESE FRIES>>>`)
-       - Do not put the URL. Put the KEY NAME.
+    1. **IMAGES**: You have a list of 'AVAILABLE IMAGES' filenames.
+       - If user asks for "Plant", look for 'PLANT', 'Factory', or '7777' filenames.
+       - If user asks for "Fries", look for 'CheeseFries' or similar.
+       - If user asks for "Office", look for 'display.jpg' or 'building'.
+       - **OUTPUT:** `<<<IMG: exact_filename.jpg>>>`
     
-    2. **SELL SHEETS**: If asked for document visual, output: `<<<IMG: preview_X.png>>>`
+    2. **DATA**: Use PDFs for numbers/specs.
+    3. **LANGUAGE**: English or Spanish.
+    4. **ACCURACY**: Use the provided CONTACTS list for phone numbers.
     
-    3. **DATA**: Use PDFs for numbers.
+    {contacts}
+    {web_txt}
     """
-    payload = [system_prompt] + ai_files + [question]
+    
+    payload = [system_prompt] + pdf_files + [question]
     try: return model.generate_content(payload).text
-    except: return "Thinking..."
+    except: return "Retrieving..."
 
 # --- UI ---
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
-        if "image_url" in message:
-            # Special Check: Is it a Web URL or Local File?
-            target = message["image_url"]
-            if target.startswith("http"):
-                render_proxy_image(target, "Reference")
-            else:
-                st.image(target, width=500)
+        if "img_file" in message:
+            show_local_image(message["img_file"])
         st.markdown(message["content"])
 
 with st.form(key="chat_form"):
-    user_input = st.text_input("Ask question...")
+    user_input = st.text_input("Ask question... / Pregunta...")
     submit = st.form_submit_button("Send")
 
 if submit and user_input:
@@ -190,33 +156,19 @@ if submit and user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing..."):
+        with st.spinner("Searching Asset Library..."):
             raw = get_answer(user_input)
             
-            # Extract Image Key
-            img_match = re.search(r"<<<IMG: (.*?)>>>", raw)
+            match = re.search(r"<<<IMG: (.*?)>>>", raw)
             clean = re.sub(r"<<<IMG: .*?>>>", "", raw).strip()
             
-            saved_img_path = None
-            
-            if img_match:
-                key_or_path = img_match.group(1).strip()
-                
-                # Check if it's a Preset Key
-                if key_or_path in ASSET_MAP:
-                    real_url = ASSET_MAP[key_or_path]
-                    render_proxy_image(real_url, key_or_path)
-                    saved_img_path = real_url
-                # Check if it's a Local PDF Preview
-                elif "preview_" in key_or_path:
-                    st.image(key_or_path, width=500)
-                    saved_img_path = key_or_path
-                else:
-                    st.write("") # Fail silent
+            img_file = None
+            if match:
+                img_file = match.group(1).strip()
+                show_local_image(img_file)
             
             st.markdown(clean)
             
-            msg_data = {"role": "assistant", "content": clean}
-            if saved_img_path: msg_data["image_url"] = saved_img_path
-            
-            st.session_state.chat_history.append(msg_data)
+            msg = {"role": "assistant", "content": clean}
+            if img_file: msg["img_file"] = img_file
+            st.session_state.chat_history.append(msg)
