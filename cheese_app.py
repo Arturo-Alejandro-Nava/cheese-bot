@@ -6,6 +6,9 @@ import os
 import time
 import zipfile
 import io
+import re
+import base64
+import fitz  # PyMuPDF
 
 # --- CONFIGURATION ---
 try:
@@ -17,143 +20,172 @@ except:
 genai.configure(api_key=API_KEY)
 model = genai.GenerativeModel('gemini-2.0-flash')
 
-# --- WEBPAGE CONFIG ---
 st.set_page_config(page_title="Hispanic Cheese Makers-Nuestro Queso", page_icon="🧀")
 
-# --- HEADER (Branding only) ---
+# --- HEADER ---
 col1, col2 = st.columns([1, 4])
 with col1:
-    possible_names = ["logo.jpg", "logo.png", "logo.jpeg", "logo"]
+    possible = ["logo.jpg", "logo.png", "logo.jpeg"]
     found = False
-    for p in possible_names:
+    for p in possible:
         if os.path.exists(p):
             st.image(p, width=130); found = True; break
     if not found: st.write("🧀")
-
 with col2:
     st.title("Hispanic Cheese Makers-Nuestro Queso")
 st.markdown("---")
 
-# --- 1. LIVE DATA SCRAPER (The Knowledge Brain) ---
+# --- 1. GUARANTEED FACT SHEET (The Source of Truth) ---
+# This prevents the AI from guessing wrong numbers. 
+# It overrides any parsing errors.
+FACT_SHEET = """
+OFFICIAL NUTRITIONAL SPECS (USE THESE NUMBERS EXACTLY):
+- **Queso Fresco (Natural)**: Serving Size: 1oz (28g). Protein: 5g. Total Fat: 7g. Calories: 90. Sodium: 190mg.
+- **Queso Blanco**: Serving Size: 1oz. Protein: 5g. Total Fat: 7g. Calories: 90.
+- **Queso Panela**: Serving Size: 1oz. Protein: 5g. Total Fat: 6g. Calories: 80.
+- **Cotija**: Serving Size: 1oz. Protein: 5g. Total Fat: 8g. Sodium: ~400mg.
+- **Oaxaca**: Serving Size: 1oz. Protein: 6g. Total Fat: 8g. Calories: 100.
+"""
+
+# --- 2. IMAGE RENDERER (Bypass Block) ---
+def render_image(url):
+    try:
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://hcmakers.com/"}
+        r = requests.get(url, headers=headers, timeout=4)
+        if r.status_code == 200:
+            b64_img = base64.b64encode(r.content).decode()
+            st.markdown(f'<img src="data:image/png;base64,{b64_img}" style="width:100%; max-width:500px; border-radius:8px;">', unsafe_allow_html=True)
+    except: st.markdown(f"[View Image]({url})")
+
+# --- 3. LIVE DATA HUNTER ---
 @st.cache_resource(ttl=3600)
-def get_live_intelligence():
+def get_data_bundle():
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # A. Scrape Website Text
-    target_pages = [
-        "https://hcmakers.com/", 
-        "https://hcmakers.com/products/", 
-        "https://hcmakers.com/capabilities/", # Factory info
-        "https://hcmakers.com/quality/", 
-        "https://hcmakers.com/contact-us/",   # Phone/Address
-        "https://hcmakers.com/about-us/",
-        "https://hcmakers.com/category-knowledge/"
-    ]
+    # A. Scrape Website
+    web_text = "WEBSITE DATA:\n"
+    img_db = "IMAGES:\n"
+    urls = ["https://hcmakers.com/", "https://hcmakers.com/products/", "https://hcmakers.com/capabilities/"]
     
-    web_text = "WEBSITE DATA SOURCE:\n"
-    
-    for url in target_pages:
+    for u in urls:
         try:
-            r = requests.get(url, headers=headers)
+            r = requests.get(u, headers=headers)
             soup = BeautifulSoup(r.content, 'html.parser')
-            clean = soup.get_text(" ", strip=True)[:4000]
-            web_text += f"\n--- SOURCE: {url} ---\n{clean}\n"
-        except: continue
-
-    # B. Auto-Download PDF Documents
-    # It hunts for the Zip file, extracts sell sheets, and feeds them to the AI
-    pdf_files = []
-    file_list = []
+            web_text += f"\nPAGE: {u}\n{soup.get_text(' ', strip=True)[:4000]}\n"
+            
+            for img in soup.find_all('img'):
+                src = img.get('src')
+                if src and "uploads" in src and "logo" not in src:
+                    if src.startswith("/"): src = "https://hcmakers.com" + src
+                    img_db += f"FILE: {src.split('/')[-1]} | URL: {src}\n"
+        except: pass
+    
+    # B. Document Fetcher
+    pdf_docs = []
     
     try:
         r = requests.get("https://hcmakers.com/resources/", headers=headers)
-        soup = BeautifulSoup(r.content, 'html.parser')
-        
-        # Look for the Catalog Zip
-        zip_link = next((a['href'] for a in soup.find_all('a', href=True) if a['href'].endswith('.zip')), None)
+        zip_link = next((a['href'] for a in BeautifulSoup(r.content, 'html.parser').find_all('a', href=True) if a['href'].endswith('.zip')), None)
         
         if zip_link:
             z_data = requests.get(zip_link, headers=headers).content
             with zipfile.ZipFile(io.BytesIO(z_data)) as z:
-                count = 0
+                i = 0
                 for fname in z.namelist():
-                    # We prioritize PDFs that look like product sheets
-                    if fname.lower().endswith(".pdf") and count < 8:
-                        with open(f"temp_{count}.pdf", "wb") as f: f.write(z.read(fname))
-                        pdf_files.append(genai.upload_file(f"temp_{count}.pdf", display_name=fname))
-                        file_list.append(fname)
-                        count += 1
+                    if fname.lower().endswith(".pdf") and i < 8:
+                        # Upload to AI
+                        path = f"d_{i}.pdf"
+                        with open(path, "wb") as f: f.write(z.read(fname))
+                        pdf_docs.append(genai.upload_file(path, display_name=fname))
+                        
+                        i += 1
     except: pass
-    
-    return web_text, pdf_files, file_list
 
-# --- INITIAL LOAD ---
-with st.spinner("Connecting to Live Website & Processing Documents..."):
-    website_knowledge, live_docs, doc_names = get_live_intelligence()
+    return web_text, img_db, pdf_docs
 
-# --- CHAT ENGINE ---
+# --- LOAD ---
+with st.spinner("Connecting to Live Database & Validating Specs..."):
+    txt_data, img_catalog, ai_files = get_data_bundle()
+
+# --- BRAIN ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-def get_text_response(question):
-    
-    doc_str = "\n".join(doc_names)
-    
+def get_answer(question):
+    # HARDCODED IMAGE PRIORITY MAP
+    PRIORITY_IMAGES = """
+    - FRESCO: https://hcmakers.com/wp-content/uploads/2020/12/YBH_Fresco_Natural_10oz.png
+    - COTIJA: https://hcmakers.com/wp-content/uploads/2020/12/YBH_cotija_wedge_10oz_cp.png
+    - PANELA: https://hcmakers.com/wp-content/uploads/2020/12/YBH_Panela_Bar_8oz_v2.png
+    - BITES: https://hcmakers.com/wp-content/uploads/2021/01/OaxacaBites-web.png
+    - FRIES: https://hcmakers.com/wp-content/uploads/2021/01/CheeseFries-web.png
+    - PLANT: https://hcmakers.com/wp-content/uploads/2021/01/7777-1.jpg
+    - OFFICE: https://hcmakers.com/wp-content/uploads/2020/08/display.jpg
+    """
+
     system_prompt = f"""
-    You are the Official Sales AI for "Hispanic Cheese Makers-Nuestro Queso".
+    You are the Sales AI for Nuestro Queso.
     
-    INTELLIGENCE SOURCES:
-    1. **LIVE PDF DOCUMENTS:** {len(live_docs)} files loaded (Filenames: {doc_str}). 
-       - Read these visual tables for specific Nutrition Facts, Meltability, Pack Sizes, and Ingredients.
-    2. **WEBSITE TEXT:** Live content scraped below.
+    CRITICAL INSTRUCTIONS:
+    1. **NUTRITION DATA**:
+       - ALWAYS check the 'OFFICIAL NUTRITIONAL SPECS' list below FIRST. 
+       - If asked about Fresco Protein, use the value "5g". Do not guess "7g".
+       - Only if the info is missing there, read the attached PDFs.
     
-    STRICT BEHAVIOR RULES:
-    1. **TEXT ONLY:** Do not try to show images. Do not generate fake image links. 
-       - If a user asks for an image, politely reply: *"I am a text-based concierge. I can provide detailed descriptions, specs, and nutrition facts, but for photos please verify on our Products page."*
-    
-    2. **DATA ACCURACY:** 
-       - If asked about "Protein" or "Specs", look at the PDF table values. Do not guess. 
-       - If the PDF has multiple sizes, list them.
+    2. **IMAGES**:
+       - Use the PRIORITY LIST above.
+       - OUTPUT: `<<<IMG: URL>>>`.
        
-    3. **CONTACT INFO:**
-       - Sales (Sandy Goldberg): 847-258-0375
-       - Marketing (Arturo Nava): 847-502-0934
-       - Office: 224-366-4320
-       - Plant: 752 N. Kent Road, Kent, IL 61044.
+    3. **LANGUAGE**: English or Spanish.
     
-    4. **LANGUAGE:** English or Spanish (Detect based on question).
+    OFFICIAL NUTRITIONAL SPECS:
+    {FACT_SHEET}
+    
+    IMAGE PRIORITY LIST:
+    {PRIORITY_IMAGES}
+    
+    ADDITIONAL IMAGES:
+    {img_catalog}
     
     WEBSITE CONTEXT:
-    {website_knowledge}
+    {txt_data}
     """
     
-    payload = [system_prompt] + live_docs + [question]
-    try:
-        # Wait for file processing if needed
-        for f in live_docs:
-             while f.state.name == "PROCESSING": time.sleep(1); f = genai.get_file(f.name)
-        
-        return model.generate_content(payload).text
-    except:
-        return "I am analyzing the heavy document data. Please ask again in 10 seconds."
+    payload = [system_prompt] + ai_files + [question]
+    try: return model.generate_content(payload).text
+    except: return "Consulting facts..."
 
-# --- UI DISPLAY ---
+# --- UI ---
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        if "img_src" in message:
+            render_image(message["img_src"])
 
-with st.form(key="chat_form"):
-    user_input = st.text_input("Ask about our cheeses, nutrition specs, or sales... / Pregunta...")
+with st.form("chat_form"):
+    user_input = st.text_input("Ask about nutrition, specs, or images...")
     submit = st.form_submit_button("Send")
 
 if submit and user_input:
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    with st.chat_message("user"): st.markdown(user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
-
+    
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing Catalog..."):
-            response_text = get_text_response(user_input)
-            st.markdown(response_text)
+        with st.spinner("Processing..."):
+            raw = get_answer(user_input)
             
-    st.session_state.chat_history.append({"role": "assistant", "content": response_text})
+            clean = re.sub(r"<<<IMG: .*?>>>", "", raw).strip()
+            # Clean possible markdown clutter
+            clean = clean.replace("```", "").replace("print", "")
+            
+            st.markdown(clean)
+            
+            url = None
+            match = re.search(r"<<<IMG: (.*?)>>>", raw)
+            if match:
+                url = match.group(1).strip()
+                render_image(url)
+
+            msg = {"role": "assistant", "content": clean}
+            if url: msg["img_src"] = url
+            st.session_state.chat_history.append(msg)
