@@ -19,7 +19,7 @@ model = genai.GenerativeModel('gemini-2.0-flash')
 st.set_page_config(page_title="Hispanic Cheese Makers", page_icon="🧀")
 
 # --- HEADER ---
-col1, col2, col3 = st.columns([1, 2, 1])
+col1, col2, col3 = st.columns([3, 2, 3])
 
 with col2:
     possible_names = ["logo_new.png", "logo_new.jpg", "logo.jpg", "logo.png", "logo"]
@@ -32,24 +32,9 @@ with col2:
 
     st.markdown(
         """
-        <style>
-        .classic-title {
-            font-family: 'Times New Roman', Times, serif; 
-            color: #3b4d61; 
-            text-align: center;
-            font-size: 22px; 
-            letter-spacing: 1.5px;
-            line-height: 1.4;
-            text-transform: uppercase;
-            font-weight: 400;
-            margin-top: 10px;
-            margin-bottom: 20px;
-        }
-        </style>
-        <div class="classic-title">
-            Hispanic Cheese Makers<br>
-            Nuestro Queso
-        </div>
+        <h5 style='text-align: center; color: #444; font-weight: 600; margin-top: -5px;'>
+        Hispanic Cheese Makers<br>Nuestro Queso
+        </h5>
         """, 
         unsafe_allow_html=True
     )
@@ -103,7 +88,6 @@ if prompt := st.chat_input("How can I help you? / ¿Cómo te puedo ayudar?"):
     st.session_state.chat_history.append({"role": "user", "content": prompt})
 
     with st.chat_message("assistant"):
-        # REVISED PROMPT (Fixed logic for links)
         system_prompt = f"""
         You are the Senior Sales AI for "Hispanic Cheese Makers-Nuestro Queso".
         
@@ -124,8 +108,19 @@ if prompt := st.chat_input("How can I help you? / ¿Cómo te puedo ayudar?"):
         payload = [system_prompt] + ai_pdfs + [prompt]
         
         try:
+            # 1. GET THE RAW STREAM
             stream = model.generate_content(payload, stream=True)
-            response = st.write_stream(stream)
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            
+            # 2. FILTER: EXTRACT TEXT ONLY (This fixes the error)
+            def stream_text_only():
+                for chunk in stream:
+                    if chunk.text:
+                        yield chunk.text
+
+            # 3. WRITE THE CLEAN TEXT
+            response_text = st.write_stream(stream_text_only)
+            
+            # 4. SAVE TO HISTORY
+            st.session_state.chat_history.append({"role": "assistant", "content": response_text})
         except:
             st.error("Connection refreshing... please try again.")
