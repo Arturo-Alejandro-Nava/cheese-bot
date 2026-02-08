@@ -19,27 +19,32 @@ model = genai.GenerativeModel('gemini-2.0-flash')
 # --- WEBPAGE CONFIG ---
 st.set_page_config(page_title="Hispanic Cheese Makers", page_icon="🧀")
 
-# --- HEADER (CENTERED LOGO ICON + TITLE) ---
-# We use [3, 2, 3] to squeeze the content into the middle so it looks like a mobile app header
+# --- HEADER (CENTERED LOGO + 2-LINE TITLE) ---
 col1, col2, col3 = st.columns([3, 2, 3])
 
 with col2:
-    # 1. Search for the logo (New or Old names)
-    possible_names = ["logo_new.png", "logo_new.jpg", "logo.jpg", "logo.png"]
+    # 1. Logo
+    possible_names = ["logo_new.png", "logo_new.jpg", "logo.jpg", "logo.png", "logo"]
     for p in possible_names:
         if os.path.exists(p):
-            # width=150 ensures the icon stays small and crisp, not huge
-            st.image(p, width=150)
+            st.image(p, use_container_width=True)
             break
     else:
         st.write("🧀")
 
-    # 2. Centered Title below image
-    st.markdown("<h4 style='text-align: center; color: #444; margin-top: -10px;'>Hispanic Cheese Makers-Nuestro Queso</h4>", unsafe_allow_html=True)
+    # 2. Title (Forced into two lines + smaller font)
+    st.markdown(
+        """
+        <h5 style='text-align: center; color: #444; font-weight: 600; margin-top: -5px;'>
+        Hispanic Cheese Makers<br>Nuestro Queso
+        </h5>
+        """, 
+        unsafe_allow_html=True
+    )
 
 st.markdown("---")
 
-# --- 1. LIVE WEBSITE SCRAPER ---
+# --- 1. LIVE WEBSITE SCRAPER (Text) ---
 @st.cache_resource(ttl=3600) 
 def get_live_web_text():
     urls = [
@@ -60,11 +65,11 @@ def get_live_web_text():
         except: continue
     return data
 
-# --- 2. PDF LOADER ---
+# --- 2. PDF LOADER (Specs) ---
 @st.cache_resource(ttl=3600)
 def process_live_pdfs():
     ai_docs = []
-    # Grab Local PDFs
+    # Grab Local PDFs uploaded to GitHub
     local_files = glob.glob("*.pdf")
     for f in local_files:
         try:
@@ -86,16 +91,22 @@ def get_answer(question):
     system_prompt = f"""
     You are the Senior Sales AI for "Hispanic Cheese Makers-Nuestro Queso".
     
-    RULES:
+    RULES FOR RESPONSES:
     1. **VIDEO REQUESTS**: 
-       - If the user asks for videos, spicy cheese trends, or visual content:
+       - If user asks for videos, trends, or visual content:
        - **ALWAYS** direct them to the Knowledge Hub.
        - Reply: "You can watch our trend videos and category insights on our Knowledge Hub: https://hcmakers.com/category-knowledge/"
     
-    2. **SPECS**: Use the attached PDFs (if available) for nutrition/pack numbers.
-    3. **CONTACT**: Plant in Kent, IL. Phone 847-258-0375.
-    4. **NO IMAGES**: Text descriptions only.
-    5. **LANG**: English or Spanish.
+    2. **SPECS & NUTRITION**: 
+       - Use the attached PDF Documents to find protein, fat, and pack sizes. Read the tables visually.
+    
+    3. **CONTACT INFO**: 
+       - Plant: 752 N. Kent Road, Kent, IL 61044. 
+       - Phone (Sales): 847-258-0375.
+    
+    4. **NO IMAGES**: Do not display images directly. Use text descriptions.
+    
+    5. **LANG**: English or Spanish (Detect User Language).
     
     WEBSITE CONTEXT:
     {live_web_text}
@@ -113,8 +124,8 @@ for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# --- UI: INPUT ---
-if prompt := st.chat_input("Ask about our cheeses, specs, or trends..."):
+# --- UI: INPUT (Bilingual) ---
+if prompt := st.chat_input("How can I help you? / ¿Cómo te puedo ayudar?"):
     
     with st.chat_message("user"):
         st.markdown(prompt)
