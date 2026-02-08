@@ -19,8 +19,8 @@ model = genai.GenerativeModel('gemini-2.0-flash')
 # --- WEBPAGE CONFIG ---
 st.set_page_config(page_title="Hispanic Cheese Makers", page_icon="🧀")
 
-# --- HEADER (CENTERED LOGO + 2-LINE TITLE) ---
-col1, col2, col3 = st.columns([3, 2, 3])
+# --- HEADER (CENTERED LOGO + CUSTOM SERIF FONT TITLE) ---
+col1, col2, col3 = st.columns([1, 2, 1])
 
 with col2:
     # 1. Logo
@@ -32,12 +32,29 @@ with col2:
     else:
         st.write("🧀")
 
-    # 2. Title (Forced into two lines + smaller font)
+    # 2. Custom HTML Title (Matching the Screenshot Font)
+    # Font: Serif. Color: Dark Blue/Grey. Style: Uppercase + Spaced.
     st.markdown(
         """
-        <h5 style='text-align: center; color: #444; font-weight: 600; margin-top: -5px;'>
-        Hispanic Cheese Makers<br>Nuestro Queso
-        </h5>
+        <style>
+        .classic-title {
+            font-family: 'Times New Roman', Times, serif; 
+            color: #3b4d61; 
+            text-align: center;
+            font-size: 22px; 
+            letter-spacing: 1.5px;
+            line-height: 1.4;
+            text-transform: uppercase;
+            font-weight: 400;
+            margin-top: 10px;
+            margin-bottom: 20px;
+        }
+        </style>
+        
+        <div class="classic-title">
+            Hispanic Cheese Makers<br>
+            Nuestro Queso
+        </div>
         """, 
         unsafe_allow_html=True
     )
