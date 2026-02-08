@@ -19,23 +19,27 @@ model = genai.GenerativeModel('gemini-2.0-flash')
 # --- WEBPAGE CONFIG ---
 st.set_page_config(page_title="Hispanic Cheese Makers", page_icon="🧀")
 
-# --- HEADER (Centered Logo) ---
-col1, col2, col3 = st.columns([1, 2, 1])
+# --- HEADER (CENTERED LOGO ICON + TITLE) ---
+# We use [3, 2, 3] to squeeze the content into the middle so it looks like a mobile app header
+col1, col2, col3 = st.columns([3, 2, 3])
 
 with col2:
-    possible_names = ["logo.jpg", "logo.png", "logo.jpeg", "logo"]
+    # 1. Search for the logo (New or Old names)
+    possible_names = ["logo_new.png", "logo_new.jpg", "logo.jpg", "logo.png"]
     for p in possible_names:
         if os.path.exists(p):
-            st.image(p, use_container_width=True)
+            # width=150 ensures the icon stays small and crisp, not huge
+            st.image(p, width=150)
             break
     else:
         st.write("🧀")
-    
-    st.markdown("<h3 style='text-align: center; color: #333;'>Hispanic Cheese Makers-Nuestro Queso</h3>", unsafe_allow_html=True)
+
+    # 2. Centered Title below image
+    st.markdown("<h4 style='text-align: center; color: #444; margin-top: -10px;'>Hispanic Cheese Makers-Nuestro Queso</h4>", unsafe_allow_html=True)
 
 st.markdown("---")
 
-# --- 1. LIVE WEBSITE SCRAPER (Text) ---
+# --- 1. LIVE WEBSITE SCRAPER ---
 @st.cache_resource(ttl=3600) 
 def get_live_web_text():
     urls = [
@@ -56,11 +60,11 @@ def get_live_web_text():
         except: continue
     return data
 
-# --- 2. PDF LOADER (Specs) ---
+# --- 2. PDF LOADER ---
 @st.cache_resource(ttl=3600)
 def process_live_pdfs():
     ai_docs = []
-    # Reads local PDF files you uploaded to GitHub
+    # Grab Local PDFs
     local_files = glob.glob("*.pdf")
     for f in local_files:
         try:
@@ -69,7 +73,7 @@ def process_live_pdfs():
     return ai_docs
 
 # --- LOAD DATA ---
-with st.spinner("Syncing Knowledge Base..."):
+with st.spinner("Syncing..."):
     live_web_text = get_live_web_text()
     ai_pdfs = process_live_pdfs()
 
@@ -82,23 +86,16 @@ def get_answer(question):
     system_prompt = f"""
     You are the Senior Sales AI for "Hispanic Cheese Makers-Nuestro Queso".
     
-    RULES FOR RESPONSES:
-    
+    RULES:
     1. **VIDEO REQUESTS**: 
-       - If the user asks to see a video, or asks about media/trends/spicy cheese video, **DO NOT** give a YouTube link.
-       - **ALWAYS** direct them to our Category Knowledge Hub page.
-       - Response Example: "You can watch all our latest videos and trend reports on our Knowledge Hub here: https://hcmakers.com/category-knowledge/"
+       - If the user asks for videos, spicy cheese trends, or visual content:
+       - **ALWAYS** direct them to the Knowledge Hub.
+       - Reply: "You can watch our trend videos and category insights on our Knowledge Hub: https://hcmakers.com/category-knowledge/"
     
-    2. **SPECS & NUTRITION**: 
-       - Use the attached PDF Documents to find protein, fat, and pack sizes. Read the tables visually.
-    
-    3. **CONTACT INFO**: 
-       - Plant: 752 N. Kent Road, Kent, IL 61044. 
-       - Phone (Sales): 847-258-0375.
-    
-    4. **NO IMAGES**: Do not display images directly. Use text descriptions.
-    
-    5. **LANG:** English or Spanish (Detect User Language).
+    2. **SPECS**: Use the attached PDFs (if available) for nutrition/pack numbers.
+    3. **CONTACT**: Plant in Kent, IL. Phone 847-258-0375.
+    4. **NO IMAGES**: Text descriptions only.
+    5. **LANG**: English or Spanish.
     
     WEBSITE CONTEXT:
     {live_web_text}
@@ -109,15 +106,15 @@ def get_answer(question):
     try:
         return model.generate_content(payload).text
     except:
-        return "I am verifying the information. Please ask again."
+        return "I am verifying that information. Please ask again."
 
 # --- UI: HISTORY ---
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# --- UI: INPUT (Pinned Bottom) ---
-if prompt := st.chat_input("Ask about our cheeses, specs, or videos..."):
+# --- UI: INPUT ---
+if prompt := st.chat_input("Ask about our cheeses, specs, or trends..."):
     
     with st.chat_message("user"):
         st.markdown(prompt)
